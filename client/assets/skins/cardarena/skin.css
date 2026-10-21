@@ -1,0 +1,139 @@
+/* cardarena 皮肤包 —— 卡牌竞技（CARDARENA）的竞技场风 UI。
+ *
+ * 为什么需要它：设置浮层是标准库控件（Panel/Flex/Label/Button），
+ * 没有皮肤包时用的是**系统默认外观**——那张黑卡片 + 灰按钮，和金色牌桌
+ * 拼在一起就是"系统蓝按钮 + 金色牌桌"的拼贴感。
+ *
+ * 用法：把本目录拷到 **exe 同级**的 skins/<名字>/ 下（构建脚本负责），
+ * 启动时 `host.App().UseSkin("cardarena")` 一次应用。
+ *
+ * 令牌名的坑：`Skin.ThemeOf` 把 `--bg-secondary` 这类 CSS 名映射成
+ * Theme 字段（bgSecondary）。**圆角字段叫 borderRadiusSmall**，所以真正
+ * 生效的圆角令牌是 `--border-radius-*`，不是 `--radius-*`（后者只在本
+ * 皮肤自己的规则里有效）。同理字号是 `--font-size-*`。
+ * 两种都写了：主题层吃 --border-radius-*，本皮肤的规则吃 --radius-*。
+ */
+
+:root {
+  --name: "卡牌竞技";
+  --order: 20;
+  --base: dark;
+  --dark: 1;
+
+  /* —— 底色：玄黑石台（与牌桌背景同一套）—— */
+  --bg-primary: #14110c;
+  --bg-secondary: #1d1710;
+  --bg-tertiary: #272017;
+  --bg-hover: #322718;
+  --bg-active: #1b150d;
+  --bg-disabled: #1a1712;
+
+  /* —— 强调色：暗金（与卡框 / 牌桌金环同一套）—— */
+  --primary: #d8a94e;
+  --primary-hover: #f0d08a;
+  --primary-pressed: #b8862f;
+
+  /* —— 文字：羊皮纸白 —— */
+  --text-primary: #f0e6d2;
+  --text-secondary: #bcb098;
+  --text-tertiary: #8a8171;
+  --text-inverse: #1a1410;
+
+  /* —— 描边：暗金 + 深棕 —— */
+  --border-primary: #8a6a2e;
+  --border-secondary: #4a3d24;
+  --border-hover: #d8a94e;
+  --border-focus: #f0d08a;
+  --divider: #6b5528;
+  --shadow-color: #000000a0;
+
+  /* —— 语义色 —— */
+  --success: #7fc08a;
+  --warning: #e0b25c;
+  --error: #c0564a;
+  --info: #6ea8d0;
+
+  /* —— 圆角：竞技场风偏方（--border-radius-* 才是主题字段）—— */
+  --border-radius-small: 3;
+  --border-radius-medium: 5;
+  --border-radius-large: 8;
+  --radius-small: 3;
+  --radius-medium: 5;
+  --radius-large: 8;
+
+  /* —— 字号 —— */
+  --font-size-tiny: 12;
+  --font-size-small: 13;
+  --font-size-medium: 14;
+  --font-size-large: 16;
+  --font-size-huge: 20;
+}
+
+/* ---- 按钮：常态 / 悬停 / 按下 -----------------------------------------
+ * 底板是"深红 + 暗金边"，与卡面底板同一套色；按下的按钮不是变色而是
+ * 变暗（像真的按进牌桌里）。 */
+button {
+  background: #241c13;
+  color: #f0e6d2;
+  border: 1 #8a6a2e;
+  border-radius: var(--radius-small);
+}
+button:hover {
+  background: #322718;
+  border-color: #d8a94e;
+}
+button:active {
+  background: #17120b;
+  border-color: #b8862f;
+}
+button:focus { border-color: #f0d08a; }
+
+/* 主按钮（当前选中的档位、强调动作）：暗金底 + 深字。 */
+button.primary {
+  background: #8a6a2e;
+  color: #fff3dc;
+  border: 1 #e0b25c;
+}
+button.primary:hover {
+  background: #a8803a;
+  color: #fff8e8;
+  border-color: #f0d08a;
+}
+button.primary:active {
+  background: #6b4f20;
+  border-color: #c99a48;
+}
+
+/* 禁用：熄火成铁灰，和牌桌的暗部融在一起。 */
+button:disabled {
+  background: #1c1913;
+  color: #6e685c;
+  border: 1 #3a3327;
+}
+
+/* ---- 文本 -------------------------------------------------------------- */
+label {
+  color: #f0e6d2;
+}
+label.strong { color: #f0d08a; }
+
+/* ---- 设置浮层那张卡 ---------------------------------------------------
+ * SettingsOverlay 的内容盒 class 是 "card"（类型选择器 panel），因此
+ * `panel.card` 与 `card` 两条都要命中。底色走玄黑石台 + 暗金边，
+ * 不再是系统默认黑卡片。 */
+panel.card, card {
+  background: #1d1710;
+  color: #f0e6d2;
+  border: 1 #8a6a2e;
+  border-radius: var(--radius-medium);
+  box-shadow: 0 6 18 #000000a0;
+  padding: 18px;
+}
+panel.card::title, card::title {
+  color: #f0d08a;
+  font-size: var(--font-size-large);
+}
+panel.card::divider, card::divider { background: #6b5528; }
+
+/* 浮层背后的遮罩：压暗牌桌，让卡片浮起来。 */
+panel.card:hover { border-color: #d8a94e; }

@@ -16,6 +16,13 @@
 UI 面板 / 铭牌用程序化几何画（面板属于"界面部件"，几何绘制是规范允许的
 路线），但它们同样是**入库位图**，运行时由 CDraw.BlitImage 贴出来。
 
+第二轮（观感品质改造）新增：
+    - **九宫格底板**（hud_plate / hud_frame / btn_*）：128×128 源图，
+      角宽 24 源像素（12 逻辑像素），运行时由 CardPaint.NineSlice 切成
+      9 块拼到任意尺寸——引擎没有 border-image，九宫格只能自己切。
+    - **头像徽记**（avatar_player / avatar_ai）：AI 职业图标抠 alpha 后
+      合成进金色纹章框的盾心，替掉原来的几何剪影。
+
 音效链路：纯 Python 合成 WAV（22050Hz / 16bit / 单声道）。
 """
 
@@ -38,6 +45,24 @@ AVATAR = 176
 PANEL_W, PANEL_H = 600, 452
 # 标题铭牌：显示 600×150。
 PLAQUE_W, PLAQUE_H = 600, 150
+
+# 九宫格底板：源 128×128（= 2 倍入库），角宽 24 源像素 = 12 逻辑像素。
+PLATE_SRC = 128
+PLATE_INSET = 24
+# 头像框里图标边长（源像素）+ 盾心中心（源像素，量自 avatar_frame 的
+# 红色盾心连通区域 44..131 × 44..136）。
+ICON_BOX = 80
+ICON_CENTER = (87, 90)
+
+# 竞技场配色（与 client/src/CardPalette.zan 一一对应）：
+#   玄黑石台 + 暗金 + 深红 + 羊皮纸白。
+GOLD = (216, 169, 78)
+GOLD_BRIGHT = (242, 215, 154)
+GOLD_DIM = (138, 106, 46)
+GOLD_DEEP = (78, 58, 24)
+CRIMSON = (142, 32, 40)
+INK = (10, 9, 8)
+
 
 
 def flood_background(img, thresh=30):
@@ -155,6 +180,72 @@ def build_plaque(size):
         draw.polygon([(cx, cy - 9), (cx + 7, cy), (cx, cy + 9), (cx - 7, cy)],
                      fill=(214, 168, 88, 230))
     return img
+
+
+# ----- 九宫格底板 ---------------------------------------------------------
+
+
+def nine_plate(fill_top, fill_bottom, border, inner, radius=0, stud=0,
+               sheen=True):
+    """九宫格底板：源 128×128，角宽 24 源像素。
+
+    角固定、边横竖拉伸、中间平铺——引擎没有 border-image，运行时由
+    CardPaint.NineSlice 自己切 9 块。底板按 2 倍入库，描边宽度因此是
+    逻辑像素的 2 倍。
+
+    radius = 0 → 直角（HUD 面板）；radius > 0 → 圆角（按钮）。
+    stud  → 角上装饰菱形的半径（源像素，0 = 不画）。
+    """
+    w = h = PLATE_SRC
+    body = gradient((w, h), fill_top, fill_bottom).convert("RGBA")
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    body.putalpha(mask)
+    draw = ImageDraw.Draw(body)
+    if sheen:
+        # 顶部一道高光：让底板有"被打亮"的立体感（纯色块做不到）。
+        draw.rectangle((4, 3, w - 5, 5), fill=(255, 236, 196, 26))
+    if radius > 0:
+        draw.rounded_rectangle((1, 1, w - 2, h - 2), radius=radius,
+                               outline=border, width=4)
+        draw.rounded_rectangle((9, 9, w - 10, h - 10), radius=max(2, radius - 6),
+                               outline=inner, width=2)
+    else:
+        draw.rectangle((1, 1, w - 3, h - 3), outline=border, width=4)
+        draw.rectangle((9, 9, w - 10, h - 10), outline=inner, width=2)
+    if stud > 0:
+        for (cx, cy) in ((18, 18), (w - 18, 18), (18, h - 18), (w - 18, h - 18)):
+            draw.polygon([(cx, cy - stud), (cx + stud, cy), (cx, cy + stud),
+                          (cx - stud, cy)], fill=GOLD_BRIGHT + (235,))
+    return body
+
+
+def build_avatar_icon(raw_path, out_path, frame_path, focus):
+    """头像徽记：AI 职业图标抠 alpha → 方形化 → 合成进金色纹章框盾心。
+
+    focus = 原图里的取景框 (l, t, r, b)（像素），用来只取头部——
+    AI 图里的整块盾牌外框会和金色纹章框打架。
+    """
+    frame = Image.open(frame_path).convert("RGBA")
+    src = Image.open(raw_path).convert("RGBA").crop(focus)
+    art = crop_to_alpha(flood_background(src))
+    if art.width < 1 or art.height < 1:
+        return None
+    # 方形化：短边贴满 ICON_BOX，长边居中裁掉。
+    scale = ICON_BOX / float(min(art.width, art.height))
+    art = art.resize((max(1, int(round(art.width * scale))),
+                      max(1, int(round(art.height * scale)))), Image.LANCZOS)
+    side = min(art.width, art.height)
+    left = (art.width - side) // 2
+    top = (art.height - side) // 2
+    art = art.crop((left, top, left + side, top + side)).resize(
+        (ICON_BOX, ICON_BOX), Image.LANCZOS)
+    px = ICON_CENTER[0] - ICON_BOX // 2
+    py = ICON_CENTER[1] - ICON_BOX // 2
+    frame.alpha_composite(art, (px, py))
+    frame.save(out_path, optimize=True)
+    return os.path.getsize(out_path)
+
 
 
 # ----- 音效 ---------------------------------------------------------------
@@ -326,6 +417,52 @@ def main():
     plaque = build_plaque((PLAQUE_W, PLAQUE_H))
     plaque.save(os.path.join(out, "title_plaque.png"), optimize=True)
     sizes["title_plaque.png"] = os.path.getsize(os.path.join(out, "title_plaque.png"))
+
+    # ---- 九宫格底板（第二轮：HUD 面板 + 按钮三态）----
+    # HUD 细框面板：顶栏 / 计数盒 / 事件流水。
+    plate = nine_plate((34, 28, 20), (14, 12, 9), GOLD_DIM + (255,),
+                       GOLD_DEEP + (255,), radius=0, stud=0)
+    plate.save(os.path.join(out, "hud_plate.png"), optimize=True)
+    sizes["hud_plate.png"] = os.path.getsize(os.path.join(out, "hud_plate.png"))
+
+    # HUD 厚框面板：双方信息盒 / 回合横幅（带角上菱形装饰）。
+    frame = nine_plate((44, 35, 23), (18, 14, 10), GOLD + (255,),
+                       GOLD_DEEP + (255,), radius=0, stud=6)
+    frame.save(os.path.join(out, "hud_frame.png"), optimize=True)
+    sizes["hud_frame.png"] = os.path.getsize(os.path.join(out, "hud_frame.png"))
+
+    # 按钮三态：主按钮（暗金 + 深红）/ 次按钮（玄黑 + 暗金）。
+    buttons = {
+        "btn_primary.png": ((120, 48, 42), (58, 22, 20), GOLD + (255,),
+                            GOLD_BRIGHT + (255,)),
+        "btn_primary_hover.png": ((152, 64, 52), (76, 30, 26), GOLD_BRIGHT + (255,),
+                                  (255, 236, 190, 255)),
+        "btn_primary_pressed.png": ((78, 32, 28), (38, 16, 14), GOLD_DIM + (255,),
+                                    GOLD + (255,)),
+        "btn_plain.png": ((44, 37, 27), (22, 18, 13), GOLD_DIM + (255,),
+                          GOLD_DEEP + (255,)),
+        "btn_plain_hover.png": ((62, 51, 35), (30, 25, 18), GOLD + (255,),
+                                GOLD_BRIGHT + (255,)),
+        "btn_plain_pressed.png": ((26, 21, 15), (14, 12, 9), GOLD_DEEP + (255,),
+                                  GOLD_DIM + (255,)),
+    }
+    for name, (top, bottom, border, inner) in buttons.items():
+        img = nine_plate(top, bottom, border, inner, radius=20, stud=5)
+        img.save(os.path.join(out, name), optimize=True)
+        sizes[name] = os.path.getsize(os.path.join(out, name))
+
+    # ---- 头像徽记（AI 职业图标 → 金色纹章框）----
+    frame_path = os.path.join(out, "avatar_frame.png")
+    size = build_avatar_icon(os.path.join(raw, "avatar_player.png"),
+                             os.path.join(out, "avatar_player.png"),
+                             frame_path, (320, 110, 710, 700))
+    if size:
+        sizes["avatar_player.png"] = size
+    size = build_avatar_icon(os.path.join(raw, "avatar_ai.png"),
+                             os.path.join(out, "avatar_ai.png"),
+                             frame_path, (280, 60, 760, 860))
+    if size:
+        sizes["avatar_ai.png"] = size
 
     for name in sorted(sizes):
         print("bitmap %-20s %8d bytes" % (name, sizes[name]))

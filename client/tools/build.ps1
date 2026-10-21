@@ -77,4 +77,17 @@ if (Test-Path $assets) {
             Copy-Item $_.FullName $target -Force
         }
 }
+# 皮肤包另拷一份到 **exe 同级**的 skins/<名字>/：Gui.Styling.Skin.Roots
+# 会找 exe 同级的 skins/ 与 assets/skins/，两处都放最稳（放 assets/ 下
+# 只有在 exe 同级也有 assets/skins/ 时才找得到）。
+$skins = Join-Path $assets 'skins'
+if (Test-Path $skins) {
+    $skinDest = Join-Path $Output 'skins'
+    New-Item -ItemType Directory -Force -Path $skinDest | Out-Null
+    Get-ChildItem $skins -Directory | ForEach-Object {
+        $target = Join-Path $skinDest $_.Name
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        Copy-Item (Join-Path $_.FullName '*') $target -Recurse -Force
+    }
+}
 Write-Host "Built $exe"

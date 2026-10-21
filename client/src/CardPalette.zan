@@ -1,0 +1,96 @@
+// 卡牌竞技（CARDARENA）的色板——**整个项目唯一一处颜色定义**。
+//
+// 判据（docs/GAME_UI_AND_FACING.md §二.3「颜色收进一个色板」）：
+// 同一个语义只允许有一个颜色。卡面底板、牌桌、HUD 面板、按钮、血条、
+// 能量珠、文字全部从这里取；别处不再写裸色值，也不再各挑各的近似色
+// ——上一轮"系统蓝按钮 + 金色牌桌"的拼贴感正是这么来的。
+//
+// 配色直接取自现有美术（牌桌金环 / 银白卡框 / 头像盾心深红）：
+//   玄黑石台 + 暗金 + 深红 + 羊皮纸白 + 银蓝。
+//
+// 皮肤包 `assets/skins/cardarena/skin.css` 用的是同一套色（CSS 侧只能
+// 写 hex，两边靠这张表对齐——改色先改这里）。
+public class CardPalette {
+    // —— 底色（玄黑石台）——
+    public const int Ink = 0xFF0A0908;        // 最深底：凹陷槽 / 血条空槽
+    public const int InkPanel = 0xFF17130E;   // 面板底
+    public const int InkPlate = 0xFF221B13;   // 抬起一层：按钮常态底
+    public const int InkHover = 0xFF302617;   // 悬停底
+    public const int InkActive = 0xFF1A140D;  // 按下底
+    public const int InkGlass = 0xC00B0A08;   // 半透明压暗（遮罩）
+
+    // —— 暗金（主强调）——
+    public const int Gold = 0xFFD8A94E;
+    public const int GoldBright = 0xFFF2D79A;
+    public const int GoldDim = 0xFF8A6A2E;
+    public const int GoldDeep = 0xFF4E3A18;
+
+    // —— 深红（危险 / 对手）——
+    public const int Crimson = 0xFF8E2028;
+    public const int CrimsonBright = 0xFFC0483C;
+    public const int CrimsonDeep = 0xFF401015;
+
+    // —— 文字（羊皮纸）——
+    public const int Parchment = 0xFFF0E6D2;    // 主文字
+    public const int ParchmentDim = 0xFFBCB098; // 次文字
+    public const int ParchmentFaint = 0xFF7E7666; // 三级文字
+
+    // —— 银（普通牌 / 中性数值）——
+    public const int Silver = 0xFFB9C6D2;
+    public const int SilverDim = 0xFF6C7880;
+
+    // —— 语义色 ——
+    public const int Azure = 0xFF4E8FD0;       // 玩家一方
+    public const int AzureBright = 0xFFA8D8FF;
+    public const int Blood = 0xFFB04A4A;       // 对手血量
+    public const int BloodBright = 0xFFE88C74;
+    public const int Arcane = 0xFF3FB4C8;      // 能量
+    public const int ArcaneBright = 0xFFA6E6F0;
+    public const int Violet = 0xFFD08CE8;      // 史诗稀有度
+    public const int Jade = 0xFF7FC08A;        // 成功 / 治疗
+    public const int Amber = 0xFFE0B25C;       // 强调数值
+
+    // 稀有度边框色（0 普通 / 1 精良 / 2 史诗）。
+    public static int RarityEdge(int rarity) {
+        if (rarity == 1) { return CardPalette.AzureBright; }
+        if (rarity == 2) { return CardPalette.Violet; }
+        return CardPalette.Silver;
+    }
+
+    // 稀有度底板的兜底纯色（找不到贴图时用）。
+    public static int RarityPlate(int rarity) {
+        if (rarity == 1) { return 0xFF1B2E44; }
+        if (rarity == 2) { return 0xFF2A1836; }
+        return 0xFF232A31;
+    }
+
+    // 两个颜色按百分比混合（t = 第二个颜色的占比，0..100）。
+    public static int Mix(int a, int b, int t) {
+        if (t < 0) { t = 0; }
+        if (t > 100) { t = 100; }
+        int aa = (a >> 24) & 255;
+        int ar = (a >> 16) & 255;
+        int ag = (a >> 8) & 255;
+        int ab = a & 255;
+        int ba = (b >> 24) & 255;
+        int br = (b >> 16) & 255;
+        int bg = (b >> 8) & 255;
+        int bb = b & 255;
+        int oa = (aa * (100 - t) + ba * t) / 100;
+        int orr = (ar * (100 - t) + br * t) / 100;
+        int og = (ag * (100 - t) + bg * t) / 100;
+        int ob = (ab * (100 - t) + bb * t) / 100;
+        return (oa << 24) | (orr << 16) | (og << 8) | ob;
+    }
+
+    // 提亮 / 压暗（血条渐变、悬停底色都靠这两个）。
+    public static int Lighten(int c) { return CardPalette.Mix(c, 0xFFFFFFFF, 38); }
+    public static int Darken(int c) { return CardPalette.Mix(c, 0xFF000000, 45); }
+
+    // 换 alpha（飞行光环、压暗遮罩用）。
+    public static int WithAlpha(int c, int a) {
+        if (a < 0) { a = 0; }
+        if (a > 255) { a = 255; }
+        return (a << 24) | (c & 0x00FFFFFF);
+    }
+}

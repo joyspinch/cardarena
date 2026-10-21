@@ -29,6 +29,50 @@ public class CardButton {
     }
 }
 
+// 出牌飞行动画：卡牌从手牌位飞向目标位（对手/自己头像），边飞边缩。
+// 引擎运行时转不了图，但位移 + 缩放 + 命中光环是纯几何，能做。
+public class CardFly {
+    public int cardId;
+    public int fromX;
+    public int fromY;
+    public int fromW;
+    public int fromH;
+    public int toX;
+    public int toY;
+    public int toW;
+    public int toH;
+    public int frame;
+
+    public CardFly(int cardId, int fx, int fy, int fw, int fh,
+                    int tx, int ty, int tw, int th) {
+        this.cardId = cardId;
+        this.fromX = fx;
+        this.fromY = fy;
+        this.fromW = fw;
+        this.fromH = fh;
+        this.toX = tx;
+        this.toY = ty;
+        this.toW = tw;
+        this.toH = th;
+        this.frame = 0;
+    }
+
+    // 当前进度（0..100，缓动后）。
+    public int Progress(int total) {
+        if (total <= 1) { return 100; }
+        int p = this.frame * 100 / (total - 1);
+        if (p < 0) { p = 0; }
+        if (p > 100) { p = 100; }
+        // smoothstep：t²(3-2t)
+        return p * p * (300 - 2 * p) / 1000000;
+    }
+
+    public int X(int e) { return this.fromX + (this.toX - this.fromX) * e / 100; }
+    public int Y(int e) { return this.fromY + (this.toY - this.fromY) * e / 100; }
+    public int W(int e) { return this.fromW + (this.toW - this.fromW) * e / 100; }
+    public int H(int e) { return this.fromH + (this.toH - this.fromH) * e / 100; }
+}
+
 // 卡牌竞技 · CARDARENA 的应用：菜单 → 构筑 → 对战 → 结算四个画面。
 //
 // 画面用 Canvas 直绘（卡牌是自绘游戏），设置浮层用标准库控件挂在宿主
@@ -65,6 +109,11 @@ public class CardGame : IGuiHostLoop {
     public int captureFrame = 60;
     public string toast = "";
     public int toastTimer;
+    // 按下中的按钮（动作键）：鼠标按下到抬起之间，按钮显示"按下"底板。
+    public string pressedAction = "";
+    // 出牌飞行动画（null = 没有动画在飞）。
+    public CardFly fly;
+    public const int FlyFrames = 16;
 
     public CardGame() {
         this.buttons = new List<CardButton>();
@@ -89,6 +138,14 @@ public class CardGame : IGuiHostLoop {
 
     public void Start(GuiHost h) {
         this.host = h;
+        // 竞技场皮肤包：设置浮层等标准库控件走 skin.css 的令牌与规则，
+        // 不再是系统默认黑卡片 + 灰按钮。皮肤目录在 exe 同级
+        // （build/cardarena/skins/cardarena/），由构建脚本从
+        // client/assets/skins/ 拷来。
+        // ⚠️ 顺序：底座 dark 在前，本游戏的竞技场皮肤在后（顺序反了会被
+        // 默认皮肤盖回去）。也必须在控件建出来之前应用。
+        h.App().UseSkin("dark");
+        h.App().UseSkin("cardarena");
         // 设置浮层挂到 HUD 层（标准库控件，盖在牌桌之上）。
         h.Hud().Add(this.shell.Overlay().Root());
         this.autoPlayer = this.shell.AutoPlay();
@@ -96,6 +153,10 @@ public class CardGame : IGuiHostLoop {
         this.demoMode = Environment.GetEnvironmentVariable("CARDARENA_DEMO") == "1";
         this.buildMode = Environment.GetEnvironmentVariable("CARDARENA_BUILD") == "1";
         this.capturePath = Environment.GetEnvironmentVariable("CARDARENA_CAPTURE");
+        // 截图用：启动即打开设置浮层（人眼验收皮肤包）。
+        if (Environment.GetEnvironmentVariable("CARDARENA_SETTINGS") == "1") {
+            this.shell.Overlay().SetOpen(true);
+        }
         string framesEnv = Environment.GetEnvironmentVariable("CARDARENA_FRAMES");
         if (framesEnv != "") { this.smokeFrames = Convert.ToInt32(framesEnv); }
         if (this.smokeMode) {
@@ -123,12 +184,31 @@ public class CardGame : IGuiHostLoop {
             if (keycode == 27) { this.shell.Overlay().Toggle(); }
             return;
         }
+        if (kind == 2) {
+            // 鼠标按下：记住按住了哪个按钮（按下态底板）。
+            this.pressedAction = this.ButtonAt(h.MouseX(), h.MouseY());
+            return;
+        }
         if (kind != 3 || keycode != 0) { return; }
         // 同一次释放事件只处理一次（宿主可能重复投递同一事件）。
         int seq = h.App().window.EventSeq();
         if (seq == this.lastSeq) { return; }
         this.lastSeq = seq;
+        this.pressedAction = "";
         this.OnClick(h.MouseX(), h.MouseY());
+    }
+
+    // 指针下的按钮动作键（没有则 ""）。
+    string ButtonAt(int mx, int my) {
+        for (int i = 0; i < this.buttons.Count; i = i + 1) {
+            CardButton b = this.buttons[i];
+            if (!b.enabled) { continue; }
+            if (mx < b.x || mx >= b.x + b.w || my < b.y || my >= b.y + b.h) {
+                continue;
+            }
+            return b.action;
+        }
+        return "";
     }
 
     public void FixedUpdate(GuiHost h, int deltaMilliseconds) { }
@@ -140,6 +220,10 @@ public class CardGame : IGuiHostLoop {
         this.frames = this.frames + 1;
         this.pulse = this.pulse + 1;
         if (this.toastTimer > 0) { this.toastTimer = this.toastTimer - 1; }
+        if (this.fly != null) {
+            this.fly.frame = this.fly.frame + 1;
+            if (this.fly.frame >= CardGame.FlyFrames) { this.fly = null; }
+        }
         if (this.smokeMode && this.frames >= this.smokeFrames) {
             this.Finish();
             h.RequestStop();
@@ -173,6 +257,7 @@ public class CardGame : IGuiHostLoop {
             this.view.DrawBattle(c, w, hgt, this.combat, this.selected,
                 this.awaitingTarget, this.hoverCard, this.pulse);
             this.BuildBattleButtons(w, hgt);
+            this.DrawFlyCard(c);
         } else {
             this.view.DrawTable(c, w, hgt);
             this.view.DrawResult(c, w, hgt, this.combat, this.shell.Wins(),
@@ -183,10 +268,22 @@ public class CardGame : IGuiHostLoop {
             CardButton b = this.buttons[i];
             bool hover = b.enabled && mx >= b.x && mx < b.x + b.w
                 && my >= b.y && my < b.y + b.h;
-            this.view.DrawButton(c, b.label, b.x, b.y, b.w, b.h, b.enabled, hover, b.kind);
+            bool pressed = b.enabled && b.action == this.pressedAction;
+            this.view.DrawButton(c, b.label, b.x, b.y, b.w, b.h, b.enabled, hover,
+                pressed, b.kind);
         }
         if (this.toast != "" && this.toastTimer > 0) {
-            CardPaint.TextCentered(c, this.toast, w / 2, hgt - 96, w, 18, 0xFFFFC46A);
+            this.DrawToast(c, w, hgt);
+        }
+        // 设置浮层是 HUD 控件：宿主每帧只"画"HUD、不给 HUD 控件排版，
+        // 浮层根得先测量再按舞台尺寸排一次，内容盒（card）才有尺寸、
+        // 才画得出来（否则浮层整层是空的、Esc 打开等于没打开）。
+        // 放在本帧画面画完之后：测量会动到画布的样式状态，不能插在
+        // 画面绘制中间（会把牌桌那几笔吃掉）。
+        if (this.shell.Overlay().IsOpen() && h.App() != null) {
+            Control overlayRoot = this.shell.Overlay().Root();
+            overlayRoot.MeasureTree(h.App());
+            overlayRoot.Arrange(0, 0, w, hgt);
         }
         if (this.capturePath != "" && this.frames == this.captureFrame) {
             c.WritePixels(this.capturePath, 0, 0, c.Width(), c.Height());
@@ -259,8 +356,21 @@ public class CardGame : IGuiHostLoop {
         if (this.aiTimer < this.aiDelay) { return; }
         this.aiTimer = 0;
         int side = this.combat.turn;
+        // 先取 AI 的选择（Choose 是纯函数，Step 内部会再算一次同样的结果），
+        // 这样才知道飞行动画从哪张牌起飞。
+        int sideHandCount = this.combat.HandCountOf(side);
+        int pick = CardAi.Choose(this.combat, side, this.shell.Difficulty());
+        int sideCardId = -1;
+        CardDef sideDef = null;
+        if (pick >= 0 && pick < sideHandCount) {
+            sideCardId = this.combat.HandAt(side, pick);
+            sideDef = CardCard.ById(sideCardId);
+        }
         bool played = CardAi.Step(this.combat, side, this.shell.Difficulty());
         this.PlaySound(this.combat.sound);
+        if (played && sideCardId >= 0) {
+            this.StartFly(sideCardId, pick, sideHandCount, sideDef, side);
+        }
         if (!played) {
             // 回合结束 → 轮到对方，清掉手上选择。
             this.selected = -1;
@@ -271,6 +381,86 @@ public class CardGame : IGuiHostLoop {
     void PlaySound(string name) {
         if (name == "" || this.sfx == null) { return; }
         this.sfx.Play(name);
+    }
+
+    // ----- 出牌飞行动画 ----------------------------------------------------
+
+    // 画飞行中的卡牌（位移 + 缩放），落点炸一圈金色光环。
+    void DrawFlyCard(Canvas c) {
+        if (this.fly == null) { return; }
+        int e = this.fly.Progress(CardGame.FlyFrames);
+        int x = this.fly.X(e);
+        int y = this.fly.Y(e);
+        int w = this.fly.W(e);
+        int h = this.fly.H(e);
+        this.view.DrawCardShadow(c, x, y, w, h, 6);
+        this.view.DrawCard(c, this.fly.cardId, x, y, w, h, false, true);
+        // 命中光环：后半程开始扩张、变淡。
+        int prog = this.fly.frame * 100 / (CardGame.FlyFrames - 1);
+        if (prog > 55) {
+            int p = (prog - 55) * 100 / 45;
+            int rad = 12 + p * 42 / 100;
+            int alpha = 230 - p * 210 / 100;
+            int cx = this.fly.toX + this.fly.toW / 2;
+            int cy = this.fly.toY + this.fly.toH / 2;
+            CardPaint.Circle(c, cx, cy, rad,
+                CardPalette.WithAlpha(CardPalette.GoldBright, alpha), 3);
+        }
+    }
+
+    // 提示条（美术底板 + 描边文字），压在牌桌下沿。
+    void DrawToast(Canvas c, int w, int h) {
+        int size = 18;
+        int tw = c.MeasureText(this.toast, CardPaint.S(size));
+        int pw = tw + 48;
+        int ph = 40;
+        int px = w / 2 - pw / 2;
+        int py = h - 96;
+        this.view.DrawHudPlate(c, px, py, pw, ph);
+        CardPaint.TextCenteredShadow(c, this.toast, w / 2, py + 11, w, size,
+            CardPalette.Amber);
+    }
+
+    // 出牌飞行动画：卡牌从**出牌方**的手牌位飞向目标位（指向对手的牌
+    // 飞对手头像，自身增益飞自己头像）。side 决定起点与落点。
+    void StartFly(int cardId, int index, int handCount, CardDef def, int side) {
+        int fx = 0;
+        int fy = 0;
+        int fw = CardView.CardW;
+        int fh = CardView.CardH;
+        if (side == CardCombat.AiSide) {
+            int backW = 56;
+            int backH = 79;
+            int backX = CardView.DesignW - 40
+                - (handCount * backW + (handCount - 1) * 6);
+            fx = backX + index * (backW + 6);
+            fy = 60;
+            fw = backW;
+            fh = backH;
+        } else {
+            int hx = CardView.HandX(handCount);
+            fx = hx + index * (CardView.CardW + CardView.CardGap);
+            fy = CardView.HandY - 20;
+        }
+        // 落点：指向对手 → 对手头像；自身增益 → 自己头像。
+        int tx = CardView.TargetX + CardView.TargetW / 2 - 26;
+        int ty = CardView.TargetY + CardView.TargetH / 2 - 26;
+        bool toOpponent = def != null && def.NeedsTarget();
+        if (side == CardCombat.AiSide) {
+            if (!toOpponent) {
+                tx = CardView.TargetX + CardView.TargetW / 2 - 26;
+                ty = CardView.TargetY + CardView.TargetH / 2 - 26;
+            } else {
+                tx = 40 + CardView.TargetW / 2 - 26;
+                ty = 448 + CardView.TargetW / 2 - 26;
+            }
+        } else {
+            if (!toOpponent) {
+                tx = 40 + CardView.TargetW / 2 - 26;
+                ty = 448 + CardView.TargetW / 2 - 26;
+            }
+        }
+        this.fly = new CardFly(cardId, fx, fy, fw, fh, tx, ty, 52, 52);
     }
 
     // ----- 按钮 ------------------------------------------------------------
@@ -433,6 +623,7 @@ public class CardGame : IGuiHostLoop {
     void PlaySelected() {
         if (this.combat == null || this.selected < 0) { return; }
         int index = this.selected;
+        int handCount = this.combat.HandCountOf(CardCombat.PlayerSide);
         int cardId = this.combat.HandAt(CardCombat.PlayerSide, index);
         CardDef def = CardCard.ById(cardId);
         if (def == null) { return; }
@@ -442,6 +633,7 @@ public class CardGame : IGuiHostLoop {
         if (played) {
             this.selected = -1;
             this.awaitingTarget = false;
+            this.StartFly(cardId, index, handCount, def, CardCombat.PlayerSide);
             return;
         }
         this.Toast(this.combat.message);

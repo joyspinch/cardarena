@@ -23,11 +23,9 @@ public class CardRarity {
         return "普通";
     }
 
-    // 稀有度对应的边框色（0xAARRGGBB）。
+    // 稀有度对应的边框色（0xAARRGGBB）——色板唯一出处（CardPalette）。
     public static int EdgeColor(int rarity) {
-        if (rarity == CardRarity.Refined) { return 0xFF5FA8FF; }
-        if (rarity == CardRarity.Epic) { return 0xFFD08CE8; }
-        return 0xFFB9C6D2;
+        return CardPalette.RarityEdge(rarity);
     }
 }
 

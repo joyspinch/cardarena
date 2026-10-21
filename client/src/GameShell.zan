@@ -30,7 +30,9 @@ public class GameShell {
         this.settings.AddIntChoice("difficulty", "对手强度", 2,
             new List<int> { 1, 2, 3 });
         // 每回合能量：直接决定出牌速度（2/3/4）。
-        this.settings.AddIntChoice("energy", "每回合能量", 3,
+        // ⚠️ 标签是 4 个字以内——设置浮层的档位名标签宽度固定（96px），
+        // 5 个字会被截成"每回合…"。
+        this.settings.AddIntChoice("energy", "回合能量", 3,
             new List<int> { 2, 3, 4 });
         // 自动出牌：勾上后自己的座位也交给 AI 代打（观战模式）。
         this.settings.AddBool("autoPlay", "自动出牌", false);

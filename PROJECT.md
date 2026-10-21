@@ -16,7 +16,8 @@
   回血 / 加能量 / 持续伤害）；稀有度分普通 / 精良 / 史诗，影响数值与卡面底板。
 - **出牌流程**：点一张手牌 → 需要选目标的牌要点对手头像（不需要的直接按
   「出牌」）→ 扣能量 → **立即结算**。能量不足时**不扣能量、不出牌**，并在
-  屏幕中央给出明确提示（绝不静默吞掉）。
+  屏幕中央给出明确提示（绝不静默吞掉）。打出的牌**从手牌位飞向目标位**
+  （指向对手的牌飞对手头像，自身增益飞自己头像），落点炸一圈金色光环。
 - **AI 对手**：能打脸就打脸；自己快没血就回血 / 格挡；手牌少就用抽牌牌补
   手牌；能量牌抢先手。难度三档（只会打 / 会回血 / 会抢能量）。
 - **结算**：任一方 HP ≤ 0 判胜负，面板显示回合数、双方剩余生命、剩余牌库，
@@ -35,11 +36,21 @@
 
 ## 素材与美术路线
 
-按 `REAL_GAME_STANDARD.md` §4 走 **底板位图 + 程序化花纹**：
+按 `REAL_GAME_STANDARD.md` §4 走 **底板位图 + 程序化花纹**，按
+`GAME_UI_AND_FACING.md` 走 **UI 图形化**：
 
 - **位图**：卡面底板 3 张（按稀有度：普通银 / 精良蓝 / 史诗紫金）、卡背、
-  牌桌背景、头像徽记、HUD 面板、标题铭牌 —— 共 **8 张**，全部由
-  `CDraw.BlitImage` 贴进画面（找不到贴图就退回纯色绘制，不崩）。
+  牌桌背景、角色徽记 2 张、HUD 底板 2 张、按钮底板 6 张、结算面板、
+  标题铭牌 —— 共 **18 张**，全部由 `CDraw.BlitImage` /
+  `CardPaint.NineSlice` 贴进画面（找不到贴图就退回纯色绘制，不崩）。
+- **九宫格**：引擎没有 `border-image`，HUD 面板与按钮底板（128×128 源图、
+  24 源像素角宽）由 `CardPaint.NineSlice` 自己切 9 块拼出来。
+- **颜色只有一个出处**：`src/CardPalette.zan`（玄黑石台 + 暗金 + 深红 +
+  羊皮纸白 + 银蓝）。卡面、牌桌、面板、按钮、血条、能量共用这一套色。
+- **皮肤包**：`client/assets/skins/cardarena/skin.css`（竞技场风：暗金 +
+  深红 + 玄黑）。构建拷到 exe 同级的 `build/cardarena/skins/cardarena/`，
+  启动时 `UseSkin("dark")` → `UseSkin("cardarena")` 应用——设置浮层因此
+  不再是系统默认黑卡片 + 灰按钮。
 - **程序化**：卡名 / 费用 / 效果说明 / 数值 / 稀有度符号 / 类型图标全部用
   画布原语画（**中文不进位图**，AI 生成的中文字形会糊）。
 - **音效**：9 个 WAV（出牌 / 命中 / 格挡 / 抽牌 / 治疗 / 回合 / 胜利 /
@@ -66,7 +77,8 @@
 | `src/CardAi.zan` | 对手策略（打脸 / 回血 / 补牌 / 抢能量，三档难度） |
 | `src/CardBuild.zan` | 牌组构筑：12 选 8、随机选牌、洗牌、牌组与对手牌组 |
 | `src/CardView.zan` | 渲染层：菜单 / 构筑 / 对战 / 结算四画面 + 卡面 + 贴图 |
-| `src/CardPaint.zan` | 逻辑坐标画布原语（包 CDraw 的视口映射） |
+| `src/CardPaint.zan` | 逻辑坐标画布原语（包 CDraw 的视口映射）+ 九宫格 + 带阴影文字 |
+| `src/CardPalette.zan` | **色板**：整个项目唯一一处颜色定义 |
 | `src/GameShell.zan` | 存档（胜场 / 败场 / 场次 / 最高回合数）+ 设置（强度 / 能量 / 自动出牌） |
 
 ## 编译
@@ -80,6 +92,8 @@ pwsh -File client/tools/build.ps1 -PackageProject D:\project\zan-head
 `D:/project/zan-lang/build/zanc.exe` 依次找，也可用 `-Compiler` 显式指定。
 
 素材会拷到 exe 旁（`build/cardarena/assets/`），运行时磁盘优先。
+皮肤包另拷到 **exe 同级**的 `build/cardarena/skins/cardarena/skin.css`
+（`Gui.Styling.Skin.Roots` 找的就是这个位置）。
 
 ## 测试
 
@@ -107,6 +121,7 @@ pwsh -File client/tools/test.ps1 -PackageProject D:\project\zan-head
 | `CARDARENA_FRAMES=<n>` | 冒烟帧数上限（默认 900） |
 | `CARDARENA_DEMO=1` | 演示模式：直接进对战，玩家座位空着（截图用） |
 | `CARDARENA_BUILD=1` | 直接进构筑界面 |
+| `CARDARENA_SETTINGS=1` | 启动即打开设置浮层（验收皮肤包用） |
 | `CARDARENA_CAPTURE=<path>` | 抓一帧画布像素（后端画布，非窗口） |
 | `CARDARENA_SAVE=<dir>` | 存档目录（测试脚本用临时目录） |
 
@@ -134,11 +149,15 @@ python client/tools/make_assets.py --raw build/raw --out client/assets
 ## 当前状态
 
 可玩：构筑 → 对战 → 结算全流程，位图 / 音效 / 存档 / 设置 / AI 全部到位。
-截图见 `build/cardarena/shot.png`（对战）、`shot_build.png`（构筑）、
-`shot_menu.png`（主菜单）。
+
+观感（第二轮品质改造）：皮肤包 + 九宫格 HUD 底板 + 三态按钮 + 卡牌投影
++ 出牌飞行动画 + 角色徽记 + 渐变分段血条，颜色统一走 `CardPalette`。
+
+截图见 `build/cardarena/ui_battle.png`（对局 HUD）、`ui_build.png`
+（构筑界面）、`ui_settings.png`（设置浮层 · 竞技场皮肤）。
 
 ## 后续
 
 1. 卡牌扩充到 24 张候选 + 关键词 / 装备 / 状态（FreeKill 的声明式技能表）。
-2. 动画演出：出牌飞入、伤害数字飘字、格挡特效。
+2. 动画演出：伤害数字飘字、格挡特效（出牌飞入已做）。
 3. 需要时再评估联网（`legend` 有服务端可参考）。

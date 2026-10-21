@@ -1,0 +1,93 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Json;
+using Game.Foundation;
+using Game.Foundation.Gui;
+
+// 千军牌局 · CARDARENA 的外壳：存档（最高回合数 + 局数）+ 设置（难度 /
+// 法力回复 / 自动出牌）+ 设置浮层。
+//
+// 存档基座（原子写 + 备份回退 + 版本号）与设置逻辑层（档位计算 + 校验 +
+// 落盘）都在公共包 Game.Foundation 里；这里只留"这个游戏存什么、设置有哪
+// 几项"——换个游戏换的正是这两行。
+public class GameShell {
+    GameSaveStore store;
+    GameSettings settings;
+    SettingsModel model;
+    SettingsOverlay overlay;
+    int bestRounds;
+    int runs;
+
+    public GameShell() {
+        string dir = GameShell.SaveDir();
+        Directory.CreateDirectory(dir);
+        this.store = new GameSaveStore(dir, "cardarena", 1);
+        this.settings = new GameSettings().At(dir + "/settings.json");
+        // 难度：对手进攻的节奏（越难越快压掉玩家兵力）。
+        this.settings.AddIntChoice("difficulty", "对手强度", 2, new List<int> { 1, 2, 3 });
+        // 法力回复：每帧回几点法力，决定出牌快慢。
+        this.settings.AddIntChoice("manaRate", "法力回复", 1, new List<int> { 1, 2, 3 });
+        // 自动出牌：勾上后每回合自动打最便宜的一张牌（每张削减对手 1 兵）。
+        this.settings.AddBool("autoPlay", "自动出牌", false);
+        this.settings.Load();
+        this.model = new SettingsModel(this.settings);
+        this.overlay = new SettingsOverlay(this.model);
+        this.overlay.SetTitle("设置");
+        this.Load();
+    }
+
+    // 存档目录：%LOCALAPPDATA%/Cardarena（可用 CARDARENA_SAVE 环境变量覆盖，
+    // 测试脚本靠它把存档落在临时目录里，不污染玩家机器）。
+    static string SaveDir() {
+        string overridden = Environment.GetEnvironmentVariable("CARDARENA_SAVE");
+        if (overridden != "") { return overridden; }
+        string basePath = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        if (basePath == "") { basePath = Directory.GetCurrentDirectory(); }
+        return basePath + "/Cardarena";
+    }
+
+    public SettingsOverlay Overlay() { return this.overlay; }
+    public int Best() { return this.bestRounds; }
+    public int Runs() { return this.runs; }
+
+    // 对手强度档（1 简单 / 2 普通 / 3 困难）——游戏逻辑读它算进攻节奏。
+    public int Difficulty() {
+        if (this.settings == null) { return 2; }
+        return this.settings.GetInt("difficulty");
+    }
+
+    // 每帧法力回复点数（1/2/3）。
+    public int ManaRate() {
+        if (this.settings == null) { return 1; }
+        return this.settings.GetInt("manaRate");
+    }
+
+    // 是否自动出牌。
+    public bool AutoPlay() {
+        if (this.settings == null) { return false; }
+        return this.settings.GetBool("autoPlay");
+    }
+
+    // 读档：没有存档就用默认值，不报错。
+    public void Load() {
+        JsonValue data = this.store.Load(0);
+        if (data == null) { this.bestRounds = 0; this.runs = 0; return; }
+        this.bestRounds = data.Int("bestRounds", 0);
+        this.runs = data.Int("runs", 0);
+    }
+
+    // 存档：最高回合数只增不减，局数 +1。
+    public void Save() {
+        JsonValue data = JsonValue.NewObject();
+        data.PutInt("bestRounds", this.bestRounds);
+        data.PutInt("runs", this.runs + 1);
+        this.runs = this.runs + 1;
+        this.store.Save(0, data);
+    }
+
+    // 一局结束：把本局撑过的回合数记进最高记录（不落盘，退出时统一存）。
+    public void RecordRun(int rounds) {
+        if (rounds > this.bestRounds) { this.bestRounds = rounds; }
+    }
+}

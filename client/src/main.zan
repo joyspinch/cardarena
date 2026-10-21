@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Gui;
+using Gui.Backend;
 
 // 千军牌局 · CARDARENA —— 阶段一：项目骨架 + 卡牌对战场景。
 //
@@ -18,6 +19,7 @@ using Gui;
 public class Program {
     Form form;
     App app;
+    GameShell shell;
     int frames = 0;
     int tick = 0;
 
@@ -29,6 +31,12 @@ public class Program {
     int mana = 6;
     int manaMax = 10;
 
+    // 战局：回合数 / 双方兵力（AI 按难度档进攻，玩家靠出牌削对手）
+    int rounds = 0;
+    int playerTroops = 6;
+    int enemyTroops = 4;
+    int plays = 0;
+
     static void Main() {
         Program p = new Program();
         p.Run();
@@ -39,14 +47,30 @@ public class Program {
         app = form.GetApp();
         app.UseSkin("dark");
         Canvas.SetBackend(1);
+        // 外壳：存档（最高回合数/局数）+ 设置浮层。浮层是标准库控件，
+        // 盖在直绘画面之上——Esc 开关。
+        this.shell = new GameShell();
+        form.Add(this.shell.Overlay().Root());
         app.Show();
         app.RequestRedraw();
         while (true) {
             int got = app.PollOneEvent();
-            if (got < 0) { break; }
+            if (got < 0) { this.Finish(); break; }
+            // Esc 开关设置浮层（只有真有事件时才看键码，否则会拿上一帧的
+            // 残留值反复开关）。
+            if (got == 1 && app.window.EventKind() == 4
+                && app.window.EventKeyCode() == Keys.Escape()) {
+                this.shell.Overlay().Toggle();
+            }
+            this.shell.Overlay().Tick();
             Tick();
             app.BeginFrame();
             Render();
+            // 控件树叠在直绘之上：测量 → 排布 → 绘制。
+            form.MeasureTree(app);
+            form.Arrange(app.ShapeOffX(), app.ContentTop() + app.ShapeOffY(),
+                app.ClientWidth(), app.ClientHeight() - app.ContentTop());
+            form.RenderTree(app);
             app.RenderChrome("千军牌局 · CARDARENA");
             frames = frames + 1;
             string capture = Environment.GetEnvironmentVariable("CARDARENA_CAPTURE");
@@ -59,11 +83,21 @@ public class Program {
             if (IsSmoke() && frames >= SmokeFrames()) {
                 Console.WriteLine("CARDARENA_SMOKE_OK frames=" + Convert.ToString(frames)
                     + " tick=" + Convert.ToString(tick));
+                this.Finish();
                 break;
             }
             app.RequestRedraw();
             Window.SleepMs(16);
         }
+    }
+
+    // 收尾：存档落盘 + 打印读回值（测试脚本靠这行验证"跑两遍读得到"）。
+    void Finish() {
+        // 打到一半退出的这一局也计入最远进度。
+        this.shell.RecordRun(this.rounds);
+        this.shell.Save();
+        Console.WriteLine("CARDARENA_SAVE best=" + Convert.ToString(this.shell.Best())
+            + " runs=" + Convert.ToString(this.shell.Runs()));
     }
 
     bool IsSmoke() {
@@ -78,8 +112,44 @@ public class Program {
 
     void Tick() {
         tick = tick + 1;
-        mana = mana + 1;
+        // 一回合 = 30 帧
+        if (tick % 30 != 0) { return; }
+        rounds = rounds + 1;
+        // 法力回复：回复档（1/2/3）决定每回合回几点法力——设置不是摆设。
+        mana = mana + this.shell.ManaRate();
         if (mana > manaMax) { mana = manaMax; }
+        // 自动出牌：勾上后每回合把法力换成牌，每张削减对手 1 兵。
+        if (this.shell.AutoPlay()) {
+            while (true) {
+                int pick = -1;
+                for (int i = 0; i < handCost.Length; i = i + 1) {
+                    if (handCost[i] > mana) { continue; }
+                    if (pick < 0 || handCost[i] < handCost[pick]) { pick = i; }
+                }
+                if (pick < 0) { break; }
+                mana = mana - handCost[pick];
+                selected = pick;
+                plays = plays + 1;
+                enemyTroops = enemyTroops - 1;
+                if (enemyTroops <= 0) { break; }
+            }
+        }
+        // AI 进攻：对手强度档决定每几回合压掉玩家 1 兵。
+        int every = 4 - this.shell.Difficulty();
+        if (rounds % every == 0) { playerTroops = playerTroops - 1; }
+        // 对手每 3 回合补 1 兵（上限 4）。
+        if (rounds % 3 == 0) {
+            enemyTroops = enemyTroops + 1;
+            if (enemyTroops > 4) { enemyTroops = 4; }
+        }
+        // 一局结束（打空对手或被打光）：记录撑过的回合数，重开一局。
+        if (playerTroops <= 0 || enemyTroops <= 0) {
+            this.shell.RecordRun(this.rounds);
+            rounds = 0;
+            playerTroops = 6;
+            enemyTroops = 4;
+            plays = 0;
+        }
     }
 
     void Render() {
@@ -96,11 +166,11 @@ public class Program {
         c.DrawRoundRect(tx, ty, tw, th, 16, 0xFF2F4A60, 2);
         // 双方血条
         c.FillRect(tx + 24, ty + 20, 220, 14, 0xFF16202B);
-        c.FillRect(tx + 24, ty + 20, 220, 14, 0xFF3E8FD6);
-        c.DrawText(tx + 24, ty + 42, "你 · 势力" + Convert.ToString(6) + "兵", 0xFFC8D8E8, 15);
+        c.FillRect(tx + 24, ty + 20, 220 * playerTroops / 6, 14, 0xFF3E8FD6);
+        c.DrawText(tx + 24, ty + 42, "你 · 势力" + Convert.ToString(playerTroops) + "兵", 0xFFC8D8E8, 15);
         c.FillRect(tx + tw - 244, ty + 20, 220, 14, 0xFF16202B);
-        c.FillRect(tx + tw - 244, ty + 20, 118, 14, 0xFFB04A4A);
-        c.DrawText(tx + tw - 244, ty + 42, "对手 · 势力" + Convert.ToString(4) + "兵", 0xFFC8D8E8, 15);
+        c.FillRect(tx + tw - 244, ty + 20, 220 * enemyTroops / 4, 14, 0xFFB04A4A);
+        c.DrawText(tx + tw - 244, ty + 42, "对手 · 势力" + Convert.ToString(enemyTroops) + "兵", 0xFFC8D8E8, 15);
         // 场上的单位
         string[] units = new string[] { "刀盾兵", "弓手", "骑兵", "谋士", "工造营" };
         for (int i = 0; i < units.Length; i = i + 1) {
@@ -135,8 +205,10 @@ public class Program {
             c.DrawText(cx + cardW - 52, cy + 112, "武 " + Convert.ToString(hp[i]), 0xFF8FA6BC, 14);
         }
         c.DrawText(24, 24, "千军牌局 · 卡牌对战骨架", 0xFFD9B45C, 20);
-        c.DrawText(24, 52, "tick=" + Convert.ToString(tick) + "  手牌 " + Convert.ToString(hand.Length)
+        c.DrawText(24, 52, "tick=" + Convert.ToString(tick) + "  回合 " + Convert.ToString(rounds)
+            + "  出牌 " + Convert.ToString(plays)
             + "  选中原语：Lua 声明式技能表（事件栈 + Task 调度）", 0xFF8FA6BC, 14);
+        c.DrawText(24, h - 52, "Esc 打开设置", 0xC08FA6BC, 14);
         c.DrawText(24, h - 26, "TODO 素材：卡面底板6稀有度 + 64x64 符号化图标60 + 卡背 + 头像框4 + 牌桌贴图",
             0x998FA6BC, 14);
     }

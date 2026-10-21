@@ -42,7 +42,7 @@ if (-not $PackageProject) {
     if ($env:ZAN_HOME) {
         $PackageProject = $env:ZAN_HOME
     } else {
-        throw '需要 -PackageProject 指向含 packages/ 的仓库根（如 D:/project/zan-head）'
+        throw '需要 -PackageProject 指向含 packages/ 的仓库根（如 D:/project/zan-lang）'
     }
 }
 if (-not $Output) { $Output = Join-Path $repo 'build/cardarena' }
@@ -90,4 +90,15 @@ if (Test-Path $skins) {
         Copy-Item (Join-Path $_.FullName '*') $target -Recurse -Force
     }
 }
+
+# 控件基线 base.css **不在这里拷**：zanc 会自动内嵌 stdlib 的 Gui 皮肤基线
+# （含 base.css 与 dark/light——见 src/compiler/main.c 的 skins 自动内嵌分支；
+# embedres 的过滤器只作用于 depth-1 的皮肤包目录，base.css 是文件照内嵌）。
+# 运行时 Gui 也是磁盘优先、内嵌兜底（Gui.Styling.Skin.BaseCss），所以 exe 旁
+# 不必再放一份 base.css——省掉它还免了"磁盘旧基线盖住 exe 内嵌新基线"的漂移。
+# 只有"整体替换基线"（自带完整 base.css 替身）才会让编译器跳过基线自动内嵌。
+# 清掉旧版遗留的磁盘 base.css（老构建拷过一份）：留着会盖住 exe 内嵌的
+# 基线，让"内嵌兜底到底有没有生效"这件事永远测不出来。
+$staleBase = Join-Path $Output 'skins/base.css'
+if (Test-Path $staleBase) { Remove-Item $staleBase -Force }
 Write-Host "Built $exe"

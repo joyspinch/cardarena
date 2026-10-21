@@ -1,0 +1,482 @@
+using System;
+using System.Collections.Generic;
+using Gui;
+using Game.Kit;
+using Game.Foundation;
+using Game.Foundation.Gui;
+
+// 一个可点的动作按钮。
+public class CardButton {
+    public string action;   // 动作键（比文案稳）
+    public string label;
+    public int kind;        // 0 普通 1 强调 2 危险
+    public int x;
+    public int y;
+    public int w;
+    public int h;
+    public bool enabled;
+
+    public CardButton(string action, string label, int kind, int x, int y,
+                      int w, int h, bool enabled) {
+        this.action = action;
+        this.label = label;
+        this.kind = kind;
+        this.x = x;
+        this.y = y;
+        this.w = w;
+        this.h = h;
+        this.enabled = enabled;
+    }
+}
+
+// 卡牌竞技 · CARDARENA 的应用：菜单 → 构筑 → 对战 → 结算四个画面。
+//
+// 画面用 Canvas 直绘（卡牌是自绘游戏），设置浮层用标准库控件挂在宿主
+// HUD 层上——两者各司其职：卡面要贴图与花纹，设置要标准控件。
+public class CardGame : IGuiHostLoop {
+    public GuiHost host;
+    public GameShell shell;
+    public CardBuild build;
+    public CardCombat combat;
+    public CardView view;
+    public Rng rng;
+    public AudioBus audioBus;
+    public SfxBank sfx;
+    public List<CardButton> buttons;
+
+    public int screen;            // 0 菜单 1 构筑 2 对战 3 结算
+    public int selected;          // 选中的手牌下标（-1 = 无）
+    public bool awaitingTarget;   // 等待玩家点对手头像出牌
+    public bool autoPlayer;       // 玩家座位也交给 AI
+    public int frames;
+    public int aiTimer;
+    public int aiDelay;
+    public int pulse;
+    public int hoverCard;
+    public int hoverBuild;
+    public int lastSeq;
+    public bool smokeMode;
+    public bool demoMode;
+    public bool buildMode;
+    public bool finished;
+    public bool recorded;
+    public int smokeFrames = 900;
+    public string capturePath = "";
+    public int captureFrame = 60;
+    public string toast = "";
+    public int toastTimer;
+
+    public CardGame() {
+        this.buttons = new List<CardButton>();
+        this.view = new CardView();
+        this.shell = new GameShell();
+        this.build = new CardBuild();
+        this.rng = Rng.Seed((long)Window.GetTickMs() + 20261021L);
+        this.audioBus = new AudioBus();
+        this.sfx = new SfxBank(this.audioBus);
+        this.sfx.LoadAll("assets/sfx", new string[] {
+            "card_play", "card_hit", "card_block", "card_draw",
+            "card_heal", "card_turn", "card_win", "card_lose", "card_deny" });
+        this.screen = 0;
+        this.selected = -1;
+        this.awaitingTarget = false;
+        this.autoPlayer = false;
+        this.aiDelay = 30;
+        this.view.LoadAssets();
+    }
+
+    // ----- IGuiHostLoop ---------------------------------------------------
+
+    public void Start(GuiHost h) {
+        this.host = h;
+        // 设置浮层挂到 HUD 层（标准库控件，盖在牌桌之上）。
+        h.Hud().Add(this.shell.Overlay().Root());
+        this.autoPlayer = this.shell.AutoPlay();
+        this.smokeMode = Environment.GetEnvironmentVariable("CARDARENA_SMOKE") == "1";
+        this.demoMode = Environment.GetEnvironmentVariable("CARDARENA_DEMO") == "1";
+        this.buildMode = Environment.GetEnvironmentVariable("CARDARENA_BUILD") == "1";
+        this.capturePath = Environment.GetEnvironmentVariable("CARDARENA_CAPTURE");
+        string framesEnv = Environment.GetEnvironmentVariable("CARDARENA_FRAMES");
+        if (framesEnv != "") { this.smokeFrames = Convert.ToInt32(framesEnv); }
+        if (this.smokeMode) {
+            // 无头冒烟直接进对战：双方都交给 AI，快进到分出胜负。
+            this.aiDelay = 1;
+            this.autoPlayer = true;
+            this.build.Randomize(this.rng);
+            this.StartBattle();
+            return;
+        }
+        if (this.demoMode) {
+            // 演示模式：直接进对战（截图 / 验收用），玩家座位空着不动。
+            this.aiDelay = 40;
+            this.build.Randomize(this.rng);
+            this.StartBattle();
+            return;
+        }
+        if (this.buildMode) { this.screen = 1; return; }
+        this.screen = 0;
+    }
+
+    public void Event(GuiHost h, int kind, int keycode) {
+        if (kind == 4) {
+            // Esc 开合设置浮层。
+            if (keycode == 27) { this.shell.Overlay().Toggle(); }
+            return;
+        }
+        if (kind != 3 || keycode != 0) { return; }
+        // 同一次释放事件只处理一次（宿主可能重复投递同一事件）。
+        int seq = h.App().window.EventSeq();
+        if (seq == this.lastSeq) { return; }
+        this.lastSeq = seq;
+        this.OnClick(h.MouseX(), h.MouseY());
+    }
+
+    public void FixedUpdate(GuiHost h, int deltaMilliseconds) { }
+
+    public void Update(GuiHost h, int deltaMilliseconds) {
+        this.shell.Overlay().Tick();
+        // 帧计数放在 Update：窗口不可见时宿主跳过渲染（Render 不跑），
+        // 无头冒烟靠这个计数收尾。
+        this.frames = this.frames + 1;
+        this.pulse = this.pulse + 1;
+        if (this.toastTimer > 0) { this.toastTimer = this.toastTimer - 1; }
+        if (this.smokeMode && this.frames >= this.smokeFrames) {
+            this.Finish();
+            h.RequestStop();
+            return;
+        }
+        if (this.screen == 2) { this.TickBattle(); }
+        // 无头冒烟：对局分出胜负就收尾（不用等满帧数）。
+        if (this.smokeMode && this.screen == 3) {
+            this.Finish();
+            h.RequestStop();
+            return;
+        }
+    }
+
+    public void Render(GuiHost h, Canvas c, double alpha) {
+        int w = h.StageWidth();
+        int hgt = h.StageHeight();
+        int mx = h.MouseX();
+        int my = h.MouseY();
+        this.buttons.Clear();
+        if (this.screen == 0) {
+            this.view.DrawMenu(c, w, hgt, this.shell.Wins(), this.shell.Losses(),
+                this.shell.Best(), this.shell.Runs());
+            this.BuildMenuButtons(w, hgt);
+        } else if (this.screen == 1) {
+            this.hoverBuild = this.BuildCellAt(mx, my);
+            this.view.DrawBuild(c, w, hgt, this.build, this.hoverBuild);
+            this.BuildBuildButtons(w, hgt);
+        } else if (this.screen == 2) {
+            this.hoverCard = this.HandCardAt(mx, my);
+            this.view.DrawBattle(c, w, hgt, this.combat, this.selected,
+                this.awaitingTarget, this.hoverCard, this.pulse);
+            this.BuildBattleButtons(w, hgt);
+        } else {
+            this.view.DrawTable(c, w, hgt);
+            this.view.DrawResult(c, w, hgt, this.combat, this.shell.Wins(),
+                this.shell.Losses(), this.shell.Best(), this.shell.Runs());
+            this.BuildResultButtons(w, hgt);
+        }
+        for (int i = 0; i < this.buttons.Count; i = i + 1) {
+            CardButton b = this.buttons[i];
+            bool hover = b.enabled && mx >= b.x && mx < b.x + b.w
+                && my >= b.y && my < b.y + b.h;
+            this.view.DrawButton(c, b.label, b.x, b.y, b.w, b.h, b.enabled, hover, b.kind);
+        }
+        if (this.toast != "" && this.toastTimer > 0) {
+            CardPaint.TextCentered(c, this.toast, w / 2, hgt - 96, w, 18, 0xFFFFC46A);
+        }
+        if (this.capturePath != "" && this.frames == this.captureFrame) {
+            c.WritePixels(this.capturePath, 0, 0, c.Width(), c.Height());
+            Console.WriteLine("CARDARENA_CAPTURE " + Convert.ToString(c.Width())
+                + "x" + Convert.ToString(c.Height()));
+        }
+    }
+
+    public void Stop(GuiHost h) {
+        this.Finish();
+    }
+
+    void Finish() {
+        if (this.finished) { return; }
+        this.finished = true;
+        // 打到一半退出的这一局也计入场次。
+        if (!this.recorded && this.combat != null) {
+            this.shell.RecordBattle(this.combat.round, CardGame.ResultOf(this.combat));
+            this.recorded = true;
+        }
+        this.shell.Save();
+        Console.WriteLine("CARDARENA_SAVE wins=" + Convert.ToString(this.shell.Wins())
+            + " losses=" + Convert.ToString(this.shell.Losses())
+            + " best=" + Convert.ToString(this.shell.Best())
+            + " runs=" + Convert.ToString(this.shell.Runs()));
+        if (this.smokeMode) {
+            int rounds = this.combat == null ? 0 : this.combat.round;
+            int winner = this.combat == null ? -1 : this.combat.winner;
+            Console.WriteLine("CARDARENA_SMOKE_OK frames=" + Convert.ToString(this.frames)
+                + " rounds=" + Convert.ToString(rounds)
+                + " winner=" + Convert.ToString(winner));
+        }
+    }
+
+    // ----- 对战推进 --------------------------------------------------------
+
+    // 把战斗结果翻译成存档口径：1 = 玩家胜，0 = 玩家负，-1 = 平局。
+    static int ResultOf(CardCombat combat) {
+        if (combat.winner == CardCombat.PlayerSide) { return 1; }
+        if (combat.winner == CardCombat.AiSide) { return 0; }
+        return -1;
+    }
+
+    void StartBattle() {
+        this.combat = new CardCombat(this.rng);
+        this.combat.NewGame(this.build.DeckIds(), CardBuild.AiDeckIds(),
+            this.shell.EnergyPerTurn());
+        this.selected = -1;
+        this.awaitingTarget = false;
+        this.aiTimer = 0;
+        this.recorded = false;
+        this.screen = 2;
+    }
+
+    void TickBattle() {
+        if (this.combat == null) { return; }
+        if (this.combat.over) {
+            if (!this.recorded) {
+                this.recorded = true;
+                this.shell.RecordBattle(this.combat.round, CardGame.ResultOf(this.combat));
+            }
+            this.screen = 3;
+            this.PlaySound(this.combat.winner == CardCombat.PlayerSide
+                ? "card_win" : "card_lose");
+            return;
+        }
+        bool aiTurn = this.combat.turn == CardCombat.AiSide;
+        if (!aiTurn && !this.autoPlayer) { return; }
+        this.aiTimer = this.aiTimer + 1;
+        if (this.aiTimer < this.aiDelay) { return; }
+        this.aiTimer = 0;
+        int side = this.combat.turn;
+        bool played = CardAi.Step(this.combat, side, this.shell.Difficulty());
+        this.PlaySound(this.combat.sound);
+        if (!played) {
+            // 回合结束 → 轮到对方，清掉手上选择。
+            this.selected = -1;
+            this.awaitingTarget = false;
+        }
+    }
+
+    void PlaySound(string name) {
+        if (name == "" || this.sfx == null) { return; }
+        this.sfx.Play(name);
+    }
+
+    // ----- 按钮 ------------------------------------------------------------
+
+    void BuildMenuButtons(int w, int h) {
+        this.buttons.Add(new CardButton("menu-build", "构筑牌组", 1,
+            540, 402, 200, 52, true));
+        this.buttons.Add(new CardButton("menu-settings", "设置", 0,
+            w - 116, 12, 96, 36, true));
+    }
+
+    void BuildBuildButtons(int w, int h) {
+        this.buttons.Add(new CardButton("build-random", "随机选牌", 0,
+            356, 546, 160, 46, true));
+        this.buttons.Add(new CardButton("build-start", "开始对战", 1,
+            540, 546, 200, 46, this.build.Ready()));
+        this.buttons.Add(new CardButton("build-back", "返回菜单", 0,
+            764, 546, 160, 46, true));
+        this.buttons.Add(new CardButton("menu-settings", "设置", 0,
+            w - 116, 12, 96, 36, true));
+    }
+
+    void BuildBattleButtons(int w, int h) {
+        if (this.combat == null) { return; }
+        if (this.combat.turn == CardCombat.PlayerSide && !this.combat.over) {
+            if (this.selected >= 0) {
+                CardDef def = CardCard.ById(
+                    this.combat.HandAt(CardCombat.PlayerSide, this.selected));
+                bool affordable = def != null && def.cost <= this.combat.playerEnergy;
+                if (def != null && def.NeedsTarget() && !this.awaitingTarget) {
+                    this.buttons.Add(new CardButton("battle-target", "选择目标", 1,
+                        980, 744, 150, 44, true));
+                } else {
+                    this.buttons.Add(new CardButton("battle-play", "出牌", 1,
+                        980, 744, 150, 44, affordable));
+                }
+            }
+            this.buttons.Add(new CardButton("battle-end", "结束回合", 0,
+                1146, 744, 116, 44, true));
+        }
+        this.buttons.Add(new CardButton("menu-settings", "设置", 0,
+            w - 116, 12, 96, 36, true));
+    }
+
+    void BuildResultButtons(int w, int h) {
+        this.buttons.Add(new CardButton("result-again", "再战一场", 1,
+            430, 654, 170, 46, true));
+        this.buttons.Add(new CardButton("result-menu", "回到主菜单", 0,
+            680, 654, 170, 46, true));
+        this.buttons.Add(new CardButton("menu-settings", "设置", 0,
+            w - 116, 12, 96, 36, true));
+    }
+
+    // ----- 点击 ------------------------------------------------------------
+
+    void OnClick(int mx, int my) {
+        if (this.shell.Overlay().IsOpen()) { return; }
+        for (int i = 0; i < this.buttons.Count; i = i + 1) {
+            CardButton b = this.buttons[i];
+            if (!b.enabled) { continue; }
+            if (mx < b.x || mx >= b.x + b.w || my < b.y || my >= b.y + b.h) { continue; }
+            this.OnAction(b.action);
+            return;
+        }
+        if (this.screen == 1) { this.OnBuildClick(mx, my); return; }
+        if (this.screen == 2) { this.OnBattleClick(mx, my); return; }
+    }
+
+    void OnAction(string action) {
+        if (action == "menu-build") {
+            this.screen = 1;
+            return;
+        }
+        if (action == "menu-settings") {
+            this.shell.Overlay().Toggle();
+            return;
+        }
+        if (action == "build-random") {
+            this.build.Randomize(this.rng);
+            this.build.ShuffleOrder(this.rng);
+            return;
+        }
+        if (action == "build-start") {
+            if (!this.build.Ready()) {
+                this.Toast("先选满 " + Convert.ToString(CardBuild.DeckSize) + " 张牌。");
+                return;
+            }
+            this.StartBattle();
+            return;
+        }
+        if (action == "build-back") {
+            this.screen = 0;
+            return;
+        }
+        if (action == "battle-target") {
+            this.awaitingTarget = true;
+            return;
+        }
+        if (action == "battle-play") {
+            this.PlaySelected();
+            return;
+        }
+        if (action == "battle-end") {
+            if (this.combat == null || this.combat.over) { return; }
+            this.combat.PassTurn();
+            this.PlaySound(this.combat.sound);
+            this.selected = -1;
+            this.awaitingTarget = false;
+            this.aiTimer = 0;
+            return;
+        }
+        if (action == "result-again") {
+            this.screen = 1;
+            return;
+        }
+        if (action == "result-menu") {
+            this.screen = 0;
+            return;
+        }
+    }
+
+    void OnBuildClick(int mx, int my) {
+        int index = this.BuildCellAt(mx, my);
+        if (index < 0) { return; }
+        int id = this.build.order[index];
+        if (!this.build.Toggle(id)) {
+            this.Toast("最多只能选 " + Convert.ToString(CardBuild.DeckSize) + " 张牌。");
+            return;
+        }
+    }
+
+    void OnBattleClick(int mx, int my) {
+        if (this.combat == null || this.combat.over) { return; }
+        if (this.combat.turn != CardCombat.PlayerSide) { return; }
+        // 目标区：点了对手头像才出攻击牌。
+        if (this.awaitingTarget) {
+            if (mx >= CardView.TargetX && mx < CardView.TargetX + CardView.TargetW
+                && my >= CardView.TargetY && my < CardView.TargetY + CardView.TargetH) {
+                this.PlaySelected();
+                return;
+            }
+        }
+        // 手牌：第一次点选中，再点一次取消。
+        int index = this.HandCardAt(mx, my);
+        if (index >= 0) {
+            if (this.selected == index) {
+                this.selected = -1;
+                this.awaitingTarget = false;
+            } else {
+                this.selected = index;
+                this.awaitingTarget = false;
+            }
+            return;
+        }
+        this.selected = -1;
+        this.awaitingTarget = false;
+    }
+
+    // 打出当前选中的手牌（能量不足时给出明确提示，不静默吞掉）。
+    void PlaySelected() {
+        if (this.combat == null || this.selected < 0) { return; }
+        int index = this.selected;
+        int cardId = this.combat.HandAt(CardCombat.PlayerSide, index);
+        CardDef def = CardCard.ById(cardId);
+        if (def == null) { return; }
+        bool played = this.combat.Play(CardCombat.PlayerSide, index,
+            CardCombat.AiSide);
+        this.PlaySound(this.combat.sound);
+        if (played) {
+            this.selected = -1;
+            this.awaitingTarget = false;
+            return;
+        }
+        this.Toast(this.combat.message);
+    }
+
+    // 指针落在第几张手牌上（-1 = 没有）。
+    int HandCardAt(int mx, int my) {
+        if (this.combat == null) { return -1; }
+        int handCount = this.combat.HandCountOf(CardCombat.PlayerSide);
+        if (handCount <= 0) { return -1; }
+        int hx = CardView.HandX(handCount);
+        int top = CardView.HandY - 24;
+        for (int i = 0; i < handCount; i = i + 1) {
+            int x = hx + i * (CardView.CardW + CardView.CardGap);
+            if (mx < x || mx >= x + CardView.CardW) { continue; }
+            if (my < top || my >= CardView.HandY + CardView.CardH) { continue; }
+            return i;
+        }
+        return -1;
+    }
+
+    // 指针落在构筑界面的第几张候选牌上（-1 = 没有）。
+    int BuildCellAt(int mx, int my) {
+        for (int i = 0; i < CardBuild.Candidates; i = i + 1) {
+            int x = CardView.BuildCellX(i);
+            int y = CardView.BuildCellY(i);
+            if (mx < x || mx >= x + CardView.CardW) { continue; }
+            if (my < y || my >= y + CardView.CardH) { continue; }
+            return i;
+        }
+        return -1;
+    }
+
+    void Toast(string text) {
+        this.toast = text;
+        this.toastTimer = 150;
+    }
+}

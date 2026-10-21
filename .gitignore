@@ -2,3 +2,5 @@ build/
 _scratch/
 *.zpx
 __pycache__/
+# 一次性自检脚本与产物（不进版本库，也不打包进 exe）
+client/assets/_check.*

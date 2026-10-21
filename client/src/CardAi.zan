@@ -1,0 +1,73 @@
+using System;
+using Game.Kit;
+
+// 对手策略：能打脸就打脸、自己快没血就防守/回血、有抽牌牌就补手牌。
+//
+// 难度（1 简单 / 2 普通 / 3 困难）只改**判断顺序与阈值**，不改规则：
+//   1 简单：只会打攻击牌，血少也不防；
+//   2 普通：血少先回血/格挡，然后打脸，手牌少就补牌；
+//   3 困难：血少阈值更高（16），并且额外会找能量牌抢先手。
+public class CardAi {
+    // 选一张要出的牌（手牌下标）；-1 = 本回合不再出牌（结束回合）。
+    public static int Choose(CardCombat c, int side, int difficulty) {
+        if (c == null || c.over) { return -1; }
+        int energy = c.EnergyOf(side);
+        int hp = c.HpOf(side);
+        int handCount = c.HandCountOf(side);
+        int lowThreshold = 12;
+        if (difficulty >= 3) { lowThreshold = 16; }
+        bool lowHp = hp <= lowThreshold;
+
+        // 1. 血少时先回血 / 格挡（简单难度不会）。
+        if (lowHp && difficulty >= 2) {
+            int heal = CardAi.FindKind(c, side, CardKind.Heal, energy);
+            if (heal >= 0) { return heal; }
+            int guard = CardAi.FindKind(c, side, CardKind.Guard, energy);
+            if (guard >= 0) { return guard; }
+        }
+        // 2. 能打脸就打脸。
+        int attack = CardAi.FindKind(c, side, CardKind.Attack, energy);
+        if (attack >= 0) { return attack; }
+        // 3. 手牌少就补牌。
+        if (handCount <= 3) {
+            int draw = CardAi.FindKind(c, side, CardKind.Draw, energy);
+            if (draw >= 0) { return draw; }
+        }
+        // 4. 能量牌（0 费 +2 能量，优先抢在前面用）。
+        if (difficulty >= 3) {
+            int energy2 = CardAi.FindKind(c, side, CardKind.Energy, energy);
+            if (energy2 >= 0) { return energy2; }
+        }
+        // 5. 还剩防御牌就防一手。
+        if (difficulty >= 2) {
+            int guard2 = CardAi.FindKind(c, side, CardKind.Guard, energy);
+            if (guard2 >= 0) { return guard2; }
+        }
+        return -1;
+    }
+
+    // 走一步：出一张牌（返回 true），或者结束回合（返回 false）。
+    public static bool Step(CardCombat c, int side, int difficulty) {
+        if (c == null || c.over) { return false; }
+        int index = CardAi.Choose(c, side, difficulty);
+        if (index < 0) {
+            c.PassTurn();
+            return false;
+        }
+        c.Play(side, index, 1 - side);
+        return true;
+    }
+
+    // 在手牌里找第一张指定类型且能量足够的牌（-1 = 没有）。
+    public static int FindKind(CardCombat c, int side, int kind, int energy) {
+        CardDeck deck = c.DeckOf(side);
+        for (int i = 0; i < deck.handCount; i = i + 1) {
+            CardDef def = CardCard.ById(deck.HandAt(i));
+            if (def == null) { continue; }
+            if (def.kind != kind) { continue; }
+            if (def.cost > energy) { continue; }
+            return i;
+        }
+        return -1;
+    }
+}

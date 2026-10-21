@@ -1,0 +1,378 @@
+using System;
+using System.Collections.Generic;
+using Game.Kit;
+
+// 战斗状态：双方血量 / 能量 / 格挡 / 灼烧、回合推进与效果结算。
+//
+// 规则约定：
+//   - 双方 30 HP，每回合 3 能量（可由设置改成 2/3/4）；
+//   - 格挡只挡"本回合之后受到的伤害"，在拥有者自己的回合开始时清零；
+//   - 灼烧在**被灼烧方自己回合开始时**扣血（无视格挡），并递减一层；
+//   - 手牌上限 5 张；牌库空了用弃牌堆重洗。
+public class CardCombat {
+    public const int MaxHp = 30;
+    public const int MaxEnergy = 10;
+    public const int PlayerSide = 0;
+    public const int AiSide = 1;
+
+    public CardDeck playerDeck;
+    public CardDeck aiDeck;
+    public Rng rng;
+
+    public int playerHp;
+    public int aiHp;
+    public int playerEnergy;
+    public int aiEnergy;
+    public int playerBlock;
+    public int aiBlock;
+    public int playerBurn;
+    public int aiBurn;
+
+    public int turn;             // 当前行动方（0 玩家 / 1 对手）
+    public int round;            // 回合数
+    public int energyPerTurn;
+    public bool over;
+    public int winner;           // 0 玩家胜 / 1 对手胜 / -1 平局
+    public string message;       // 最近一条事件（UI 直接显示）
+    public string sound;         // 最近一次事件对应的音效名（"" = 无）
+    public List<string> log;     // 事件流水（结算面板与调试用）
+    public int playedCount;      // 双方累计出牌数
+    public int passStreak;       // 连续空过次数（防僵局）
+
+    public CardCombat(Rng rng) {
+        this.rng = rng;
+        this.playerDeck = new CardDeck();
+        this.aiDeck = new CardDeck();
+        this.log = new List<string>();
+        this.energyPerTurn = 3;
+        this.playerHp = CardCombat.MaxHp;
+        this.aiHp = CardCombat.MaxHp;
+        this.playerEnergy = 3;
+        this.aiEnergy = 3;
+        this.turn = CardCombat.PlayerSide;
+        this.round = 1;
+        this.over = false;
+        this.winner = -1;
+        this.message = "";
+        this.sound = "";
+        this.playedCount = 0;
+        this.passStreak = 0;
+    }
+
+    // 开新一局：双方洗牌起手 5 张。
+    public void NewGame(int[] playerIds, int[] aiIds, int energy) {
+        if (energy < 1) { energy = 3; }
+        this.energyPerTurn = energy;
+        this.playerDeck.Load(playerIds);
+        this.aiDeck.Load(aiIds);
+        this.playerDeck.Shuffle(this.rng);
+        this.aiDeck.Shuffle(this.rng);
+        this.playerHp = CardCombat.MaxHp;
+        this.aiHp = CardCombat.MaxHp;
+        this.playerEnergy = energy;
+        this.aiEnergy = energy;
+        this.playerBlock = 0;
+        this.aiBlock = 0;
+        this.playerBurn = 0;
+        this.aiBurn = 0;
+        this.turn = CardCombat.PlayerSide;
+        this.round = 1;
+        this.over = false;
+        this.winner = -1;
+        this.playedCount = 0;
+        this.log.Clear();
+        this.message = "开局：你的回合。";
+        this.sound = "";
+        this.passStreak = 0;
+        for (int i = 0; i < CardDeck.MaxHand; i = i + 1) {
+            this.playerDeck.Draw(this.rng);
+            this.aiDeck.Draw(this.rng);
+        }
+        this.PushLog(this.message);
+    }
+
+    // ----- 取值 -----------------------------------------------------------
+
+    public int HpOf(int side) {
+        return side == CardCombat.PlayerSide ? this.playerHp : this.aiHp;
+    }
+
+    public int EnergyOf(int side) {
+        return side == CardCombat.PlayerSide ? this.playerEnergy : this.aiEnergy;
+    }
+
+    public int BlockOf(int side) {
+        return side == CardCombat.PlayerSide ? this.playerBlock : this.aiBlock;
+    }
+
+    public int BurnOf(int side) {
+        return side == CardCombat.PlayerSide ? this.playerBurn : this.aiBurn;
+    }
+
+    public CardDeck DeckOf(int side) {
+        return side == CardCombat.PlayerSide ? this.playerDeck : this.aiDeck;
+    }
+
+    public int HandCountOf(int side) { return this.DeckOf(side).handCount; }
+
+    public int HandAt(int side, int index) { return this.DeckOf(side).HandAt(index); }
+
+    public void SetHp(int side, int hp) {
+        if (side == CardCombat.PlayerSide) { this.playerHp = hp; }
+        else { this.aiHp = hp; }
+    }
+
+    public void SetEnergy(int side, int energy) {
+        if (side == CardCombat.PlayerSide) { this.playerEnergy = energy; }
+        else { this.aiEnergy = energy; }
+    }
+
+    public void SetBlock(int side, int block) {
+        if (side == CardCombat.PlayerSide) { this.playerBlock = block; }
+        else { this.aiBlock = block; }
+    }
+
+    public void SetBurn(int side, int burn) {
+        if (side == CardCombat.PlayerSide) { this.playerBurn = burn; }
+        else { this.aiBurn = burn; }
+    }
+
+    public string NameOf(int side) {
+        return side == CardCombat.PlayerSide ? "你" : "对手";
+    }
+
+    // 能量够不够打这张牌。
+    public bool CanPlay(int side, int cardId) {
+        CardDef def = CardCard.ById(cardId);
+        if (def == null) { return false; }
+        return def.cost <= this.EnergyOf(side);
+    }
+
+    // ----- 出牌 -----------------------------------------------------------
+
+    // 打出手牌第 index 张牌。成功返回 true；能量不足时**不扣能量、不出牌**，
+    // 只写一条明确提示（绝不静默吞掉）。
+    public bool Play(int side, int index, int targetSide) {
+        if (this.over) { return false; }
+        CardDeck deck = this.DeckOf(side);
+        if (index < 0 || index >= deck.handCount) { return false; }
+        int cardId = deck.HandAt(index);
+        CardDef def = CardCard.ById(cardId);
+        if (def == null) { return false; }
+        if (def.cost > this.EnergyOf(side)) {
+            this.message = "能量不足：「" + def.name + "」需要 "
+                + Convert.ToString(def.cost) + " 点，当前只有 "
+                + Convert.ToString(this.EnergyOf(side)) + " 点。";
+            this.sound = "card_deny";
+            this.PushLog(this.message);
+            return false;
+        }
+        deck.RemoveFromHand(index);
+        this.SetEnergy(side, this.EnergyOf(side) - def.cost);
+        this.playedCount = this.playedCount + 1;
+        this.passStreak = 0;
+        this.sound = "card_play";
+        string who = this.NameOf(side);
+        this.message = who + "打出「" + def.name + "」（" + def.EffectLine() + "）。";
+        this.PushLog(this.message);
+        this.ApplyEffect(side, def, targetSide);
+        deck.Discard(cardId);
+        this.CheckDeath();
+        return true;
+    }
+
+    // 主效果 + 副效果。
+    void ApplyEffect(int side, CardDef def, int targetSide) {
+        int target = targetSide;
+        if (target != CardCombat.PlayerSide && target != CardCombat.AiSide) {
+            target = 1 - side;
+        }
+        this.ApplyOne(side, target, def.kind, def.value);
+        if (def.kind2 >= 0) {
+            this.ApplyOne(side, target, def.kind2, def.value2);
+        }
+    }
+
+    void ApplyOne(int side, int target, int kind, int value) {
+        if (kind == CardKind.Attack) { this.Damage(target, value); return; }
+        if (kind == CardKind.Guard) { this.AddBlock(side, value); return; }
+        if (kind == CardKind.Draw) { this.DrawCards(side, value); return; }
+        if (kind == CardKind.Heal) { this.Heal(side, value); return; }
+        if (kind == CardKind.Energy) { this.AddEnergy(side, value); return; }
+        if (kind == CardKind.Burn) { this.AddBurn(target, value); return; }
+    }
+
+    // 伤害：先扣格挡再扣血。
+    public void Damage(int target, int amount) {
+        if (amount <= 0) { return; }
+        int block = this.BlockOf(target);
+        int absorbed = 0;
+        if (block >= amount) {
+            // 格挡够：吃掉全部伤害，剩下多少格挡就是多少。
+            absorbed = amount;
+            block = block - amount;
+        } else {
+            // 格挡不够：全部格挡作废，溢出部分进血。
+            absorbed = block;
+            block = 0;
+        }
+        this.SetBlock(target, block);
+        int dealt = amount - absorbed;
+        this.SetHp(target, this.HpOf(target) - dealt);
+        this.sound = "card_hit";
+        string txt = this.NameOf(target) + "受到 " + Convert.ToString(dealt) + " 点伤害";
+        if (absorbed > 0) {
+            txt = txt + "（格挡 " + Convert.ToString(absorbed) + "）";
+        }
+        this.message = txt + "。";
+        this.PushLog(this.message);
+    }
+
+    // 防御：加格挡。
+    public void AddBlock(int side, int amount) {
+        if (amount <= 0) { return; }
+        this.SetBlock(side, this.BlockOf(side) + amount);
+        this.sound = "card_block";
+        string txt = this.NameOf(side) + "获得 " + Convert.ToString(amount) + " 点格挡。";
+        this.message = txt;
+        this.PushLog(txt);
+    }
+
+    // 回血（不超过上限）。
+    public void Heal(int side, int amount) {
+        if (amount <= 0) { return; }
+        int hp = this.HpOf(side) + amount;
+        if (hp > CardCombat.MaxHp) { hp = CardCombat.MaxHp; }
+        this.SetHp(side, hp);
+        this.sound = "card_heal";
+        string txt = this.NameOf(side) + "回复生命，当前 "
+            + Convert.ToString(hp) + "/" + Convert.ToString(CardCombat.MaxHp) + "。";
+        this.message = txt;
+        this.PushLog(txt);
+    }
+
+    // 加能量（上限 MaxEnergy）。
+    public void AddEnergy(int side, int amount) {
+        if (amount <= 0) { return; }
+        int e = this.EnergyOf(side) + amount;
+        if (e > CardCombat.MaxEnergy) { e = CardCombat.MaxEnergy; }
+        this.SetEnergy(side, e);
+        string txt = this.NameOf(side) + "获得 " + Convert.ToString(amount) + " 点能量（当前 "
+            + Convert.ToString(e) + "）。";
+        this.message = txt;
+        this.PushLog(txt);
+    }
+
+    // 抽牌。
+    public void DrawCards(int side, int amount) {
+        if (amount <= 0) { return; }
+        int got = this.DeckOf(side).DrawN(this.rng, amount);
+        this.sound = "card_draw";
+        string txt = this.NameOf(side) + "抽了 " + Convert.ToString(got) + " 张牌。";
+        this.message = txt;
+        this.PushLog(txt);
+    }
+
+    // 叠加灼烧层数。
+    public void AddBurn(int target, int amount) {
+        if (amount <= 0) { return; }
+        this.SetBurn(target, this.BurnOf(target) + amount);
+        string txt = this.NameOf(target) + "被灼烧 " + Convert.ToString(amount) + " 回合。";
+        this.message = txt;
+        this.PushLog(txt);
+    }
+
+    // 灼烧结算：在被灼烧方自己回合开始时扣血（无视格挡）并递减一层。
+    void TickBurn(int side) {
+        int burn = this.BurnOf(side);
+        if (burn <= 0) { return; }
+        this.SetBurn(side, burn - 1);
+        this.SetHp(side, this.HpOf(side) - burn);
+        this.sound = "card_hit";
+        string txt = this.NameOf(side) + "被灼烧，损失 " + Convert.ToString(burn) + " 点生命。";
+        this.message = txt;
+        this.PushLog(txt);
+        this.CheckDeath();
+    }
+
+    // ----- 回合 -----------------------------------------------------------
+
+    // 结束当前回合，交给对方：能量回满、格挡清零、结算灼烧、抽 1 张。
+    public void EndTurn() {
+        if (this.over) { return; }
+        this.turn = 1 - this.turn;
+        if (this.turn == CardCombat.PlayerSide) { this.round = this.round + 1; }
+        int side = this.turn;
+        this.SetEnergy(side, this.energyPerTurn);
+        this.SetBlock(side, 0);
+        this.TickBurn(side);
+        if (this.over) { return; }
+        this.DeckOf(side).Draw(this.rng);
+        this.sound = "card_turn";
+        string txt = "第 " + Convert.ToString(this.round) + " 回合 · "
+            + this.NameOf(side) + "的回合";
+        if (side == CardCombat.PlayerSide) { txt = txt + "（能量回满）"; }
+        this.message = txt + "。";
+        this.PushLog(txt);
+    }
+
+    // 空过一回合（没有可出的牌 / 玩家主动结束回合）。
+    // 连续空过 8 次判平局——双方都攥着打不出的牌时不会永远转圈。
+    public void PassTurn() {
+        if (this.over) { return; }
+        this.passStreak = this.passStreak + 1;
+        if (this.passStreak >= 8) {
+            this.over = true;
+            this.winner = -1;
+            this.message = "双方僵持不下，本局平手。";
+            this.PushLog(this.message);
+            return;
+        }
+        this.EndTurn();
+    }
+
+    // 判定胜负：任一方 HP <= 0 即结束。
+    public bool CheckDeath() {
+        if (this.over) { return true; }
+        if (this.playerHp <= 0 && this.aiHp <= 0) {
+            this.over = true;
+            this.winner = -1;
+            this.message = "双方同归于尽。";
+            this.PushLog(this.message);
+            return true;
+        }
+        if (this.playerHp <= 0) {
+            this.over = true;
+            this.winner = CardCombat.AiSide;
+            this.message = "你被击败了。";
+            this.PushLog(this.message);
+            return true;
+        }
+        if (this.aiHp <= 0) {
+            this.over = true;
+            this.winner = CardCombat.PlayerSide;
+            this.message = "对手被你击败了！";
+            this.PushLog(this.message);
+            return true;
+        }
+        return false;
+    }
+
+    // 事件流水（保留最近 40 条）。
+    void PushLog(string text) {
+        if (text == "") { return; }
+        if (this.log.Count >= 40) { this.log.RemoveAt(0); }
+        this.log.Add(text);
+    }
+
+    // 最近 n 条事件（新的在前）。
+    public List<string> RecentLog(int n) {
+        List<string> recent = new List<string>();
+        int start = this.log.Count - n;
+        if (start < 0) { start = 0; }
+        for (int i = this.log.Count - 1; i >= start; i = i - 1) {
+            recent.Add(this.log[i]);
+        }
+        return recent;
+    }
+}

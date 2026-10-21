@@ -1,0 +1,154 @@
+using System;
+using System.Collections.Generic;
+
+// 效果类型常量（主效果 / 副效果共用一套）。
+public class CardKind {
+    public const int Attack = 0;   // 攻击：造成伤害
+    public const int Guard = 1;    // 防御：格挡本回合伤害
+    public const int Draw = 2;     // 技能：抽牌
+    public const int Heal = 3;     // 技能：回血
+    public const int Energy = 4;   // 技能：加能量
+    public const int Burn = 5;     // 技能：持续伤害（灼烧）
+}
+
+// 稀有度：同时是卡面底板贴图的下标（0/1/2 → 普通/精良/史诗）。
+public class CardRarity {
+    public const int Common = 0;
+    public const int Refined = 1;
+    public const int Epic = 2;
+
+    public static string Name(int rarity) {
+        if (rarity == CardRarity.Refined) { return "精良"; }
+        if (rarity == CardRarity.Epic) { return "史诗"; }
+        return "普通";
+    }
+
+    // 稀有度对应的边框色（0xAARRGGBB）。
+    public static int EdgeColor(int rarity) {
+        if (rarity == CardRarity.Refined) { return 0xFF5FA8FF; }
+        if (rarity == CardRarity.Epic) { return 0xFFD08CE8; }
+        return 0xFFB9C6D2;
+    }
+}
+
+// 一张卡的静态定义。
+//
+// kind/value 是主效果，kind2/value2 是副效果（kind2 = -1 表示没有）。
+// 攻击与灼烧指向对手，其余指向自己。
+public class CardDef {
+    public int id;
+    public string name;
+    public int cost;       // 能量消耗
+    public int kind;
+    public int value;
+    public int kind2;
+    public int value2;
+    public int rarity;
+    public string desc;
+
+    public CardDef(int id, string name, int cost, int kind, int value,
+                   int kind2, int value2, int rarity, string desc) {
+        this.id = id;
+        this.name = name;
+        this.cost = cost;
+        this.kind = kind;
+        this.value = value;
+        this.kind2 = kind2;
+        this.value2 = value2;
+        this.rarity = rarity;
+        this.desc = desc;
+    }
+
+    // 是否需要选目标（攻击牌 / 灼烧牌指向对手）。
+    public bool NeedsTarget() {
+        return this.kind == CardKind.Attack || this.kind2 == CardKind.Attack
+            || this.kind == CardKind.Burn || this.kind2 == CardKind.Burn;
+    }
+
+    public static string KindName(int kind) {
+        if (kind == CardKind.Attack) { return "攻击"; }
+        if (kind == CardKind.Guard) { return "防御"; }
+        if (kind == CardKind.Draw) { return "抽牌"; }
+        if (kind == CardKind.Heal) { return "治疗"; }
+        if (kind == CardKind.Energy) { return "能量"; }
+        if (kind == CardKind.Burn) { return "灼烧"; }
+        return "技能";
+    }
+
+    // 卡面正文的数值短语（程序化绘制用）。
+    public static string EffectText(int kind, int value) {
+        if (kind == CardKind.Attack) { return "造成 " + Convert.ToString(value) + " 伤害"; }
+        if (kind == CardKind.Guard) { return "格挡 " + Convert.ToString(value) + " 伤害"; }
+        if (kind == CardKind.Draw) { return "抽 " + Convert.ToString(value) + " 张牌"; }
+        if (kind == CardKind.Heal) { return "回复 " + Convert.ToString(value) + " 生命"; }
+        if (kind == CardKind.Energy) { return "获得 " + Convert.ToString(value) + " 能量"; }
+        if (kind == CardKind.Burn) { return "灼烧 " + Convert.ToString(value) + " 回合"; }
+        return "";
+    }
+
+    // 完整效果说明（主效果 + 副效果）。
+    public string EffectLine() {
+        string s = CardDef.EffectText(this.kind, this.value);
+        if (this.kind2 >= 0) {
+            s = s + " · " + CardDef.EffectText(this.kind2, this.value2);
+        }
+        return s;
+    }
+}
+
+// 卡牌目录：12 张候选牌（牌组构筑的池子）。
+//
+// 编号即 id：0..4 普通 / 5..8 精良 / 9..11 史诗。
+public class CardCard {
+    static List<CardDef> catalog;
+
+    public static List<CardDef> Catalog() {
+        if (CardCard.catalog != null) { return CardCard.catalog; }
+        List<CardDef> list = new List<CardDef>();
+        // 普通
+        list.Add(new CardDef(0, "短剑斩", 1, CardKind.Attack, 3, -1, 0,
+            CardRarity.Common, "造成 3 点伤害"));
+        list.Add(new CardDef(1, "铁壁格挡", 1, CardKind.Guard, 4, -1, 0,
+            CardRarity.Common, "格挡 4 点伤害"));
+        list.Add(new CardDef(2, "战术抽牌", 1, CardKind.Draw, 2, -1, 0,
+            CardRarity.Common, "抽 2 张牌"));
+        list.Add(new CardDef(3, "烈焰箭", 2, CardKind.Attack, 5, -1, 0,
+            CardRarity.Common, "造成 5 点伤害"));
+        list.Add(new CardDef(4, "战地医师", 2, CardKind.Heal, 6, -1, 0,
+            CardRarity.Common, "回复 6 点生命"));
+        // 精良
+        list.Add(new CardDef(5, "破甲重击", 2, CardKind.Attack, 7, -1, 0,
+            CardRarity.Refined, "造成 7 点伤害"));
+        list.Add(new CardDef(6, "圣光壁垒", 2, CardKind.Guard, 8, -1, 0,
+            CardRarity.Refined, "格挡 8 点伤害"));
+        list.Add(new CardDef(7, "疾风连击", 3, CardKind.Attack, 9, -1, 0,
+            CardRarity.Refined, "造成 9 点伤害"));
+        list.Add(new CardDef(8, "能量涌动", 0, CardKind.Energy, 2, CardKind.Draw, 1,
+            CardRarity.Refined, "获得 2 能量 · 抽 1 张牌"));
+        // 史诗
+        list.Add(new CardDef(9, "烈焰风暴", 3, CardKind.Attack, 11, CardKind.Burn, 3,
+            CardRarity.Epic, "造成 11 伤害 · 灼烧 3 回合"));
+        list.Add(new CardDef(10, "不死鸟再生", 3, CardKind.Heal, 12, CardKind.Draw, 1,
+            CardRarity.Epic, "回复 12 生命 · 抽 1 张牌"));
+        list.Add(new CardDef(11, "巨龙之怒", 4, CardKind.Attack, 17, -1, 0,
+            CardRarity.Epic, "造成 17 点伤害"));
+        CardCard.catalog = list;
+        return list;
+    }
+
+    public static int Count() { return CardCard.Catalog().Count; }
+
+    // 按 id 取卡定义（越界返回 null）。
+    public static CardDef ById(int id) {
+        List<CardDef> list = CardCard.Catalog();
+        if (id < 0 || id >= list.Count) { return null; }
+        return list[id];
+    }
+
+    // 按 id 取卡名（越界返回空串）。
+    public static string NameOf(int id) {
+        CardDef def = CardCard.ById(id);
+        if (def == null) { return ""; }
+        return def.name;
+    }
+}

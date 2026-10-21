@@ -1,0 +1,76 @@
+using System;
+using Gui;
+using Game.Kit;
+
+// 逻辑坐标下的画布原语：把 CDraw 的视口映射包一层，
+// 让界面布局全部写在逻辑像素里（1280×800 设计分辨率）。
+public class CardPaint {
+    public static int X(int v) { return CDraw.MapX(v + CDraw.originX); }
+    public static int Y(int v) { return CDraw.MapY(v + CDraw.originY); }
+    public static int S(int v) { return CDraw.MapW(v); }
+
+    public static void Fill(Canvas c, int x, int y, int w, int h, int color) {
+        if (w <= 0 || h <= 0) { return; }
+        c.FillRect(CardPaint.X(x), CardPaint.Y(y), CardPaint.S(w), CardPaint.S(h), color);
+    }
+
+    public static void VGrad(Canvas c, int x, int y, int w, int h,
+                             int colorTop, int colorBottom) {
+        if (w <= 0 || h <= 0) { return; }
+        c.FillVGrad(CardPaint.X(x), CardPaint.Y(y), CardPaint.S(w), CardPaint.S(h),
+                    colorTop, colorBottom);
+    }
+
+    public static void Rect(Canvas c, int x, int y, int w, int h, int color, int t) {
+        if (w <= 0 || h <= 0 || t <= 0) { return; }
+        c.DrawRect(CardPaint.X(x), CardPaint.Y(y), CardPaint.S(w), CardPaint.S(h), color, CardPaint.S(t));
+    }
+
+    public static void Round(Canvas c, int x, int y, int w, int h, int rad, int color, int t) {
+        if (w <= 0 || h <= 0 || t <= 0) { return; }
+        c.DrawRoundRect(CardPaint.X(x), CardPaint.Y(y), CardPaint.S(w), CardPaint.S(h),
+                        CardPaint.S(rad), color, CardPaint.S(t));
+    }
+
+    public static void FillRound(Canvas c, int x, int y, int w, int h, int rad, int color) {
+        if (w <= 0 || h <= 0) { return; }
+        c.FillRoundRect(CardPaint.X(x), CardPaint.Y(y), CardPaint.S(w), CardPaint.S(h),
+                        CardPaint.S(rad), color);
+    }
+
+    public static void FillCircle(Canvas c, int cx, int cy, int rad, int color) {
+        if (rad <= 0) { return; }
+        c.FillCircle(CardPaint.X(cx), CardPaint.Y(cy), CardPaint.S(rad), color);
+    }
+
+    public static void Circle(Canvas c, int cx, int cy, int rad, int color, int t) {
+        if (rad <= 0 || t <= 0) { return; }
+        c.DrawCircle(CardPaint.X(cx), CardPaint.Y(cy), CardPaint.S(rad), color, CardPaint.S(t));
+    }
+
+    public static void Line(Canvas c, int x0, int y0, int x1, int y1, int color, int t) {
+        if (t <= 0) { return; }
+        c.DrawLine(CardPaint.X(x0), CardPaint.Y(y0), CardPaint.X(x1), CardPaint.Y(y1),
+                   color, CardPaint.S(t));
+    }
+
+    // 文字：逻辑坐标 + 逻辑字号。
+    public static void Text(Canvas c, string text, int x, int y, int size, int color) {
+        if (text == null || text == "") { return; }
+        c.DrawText(CardPaint.X(x), CardPaint.Y(y), text, color, CardPaint.S(size));
+    }
+
+    public static void TextCentered(Canvas c, string text, int cx, int y, int boxW,
+                                    int size, int color) {
+        if (text == null || text == "") { return; }
+        int tw = c.MeasureText(text, CardPaint.S(size));
+        c.DrawText(CardPaint.X(cx - tw / 2), CardPaint.Y(y), text, color, CardPaint.S(size));
+    }
+
+    // 右对齐文字（以右边界 rx 对齐）。
+    public static void TextRight(Canvas c, string text, int rx, int y, int size, int color) {
+        if (text == null || text == "") { return; }
+        int tw = c.MeasureText(text, CardPaint.S(size));
+        c.DrawText(CardPaint.X(rx - tw), CardPaint.Y(y), text, color, CardPaint.S(size));
+    }
+}

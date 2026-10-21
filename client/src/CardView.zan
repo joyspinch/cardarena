@@ -1,0 +1,528 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using Gui;
+using Game.Kit;
+
+// 画面层：菜单 / 构筑 / 对战 / 结算四个画面。
+//
+// 美术路线（对齐 docs/REAL_GAME_STANDARD.md §4）：
+//   - **底板位图 + 程序化花纹**——卡面底板（按稀有度 3 张）、卡背、牌桌
+//     背景、头像框、HUD 面板都是位图；卡名 / 数值 / 效果 / 稀有度符号
+//     用画布原语画（中文绝不进位图，会糊）。
+//   - 找不到贴图就退回纯色绘制，不崩。
+//
+// 布局按 1280×800 设计分辨率写死（CDraw.StageViewport 负责等比缩放）。
+public class CardView {
+    public const int DesignW = 1280;
+    public const int DesignH = 800;
+
+    // 卡牌显示尺寸（入库位图是它的 2 倍：256×360）。
+    public const int CardW = 128;
+    public const int CardH = 180;
+    public const int CardGap = 12;
+    public const int HandY = 556;
+
+    // 构筑界面：6 列 × 2 行。
+    public const int BuildCols = 6;
+    public const int BuildGapX = 16;
+    public const int BuildGapY = 20;
+    public const int BuildTop = 136;
+
+    // 对手头像 = 出牌目标区。
+    public const int TargetX = 40;
+    public const int TargetY = 84;
+    public const int TargetW = 88;
+    public const int TargetH = 88;
+
+    public string tablePath = "";
+    public string backPath = "";
+    public string avatarPath = "";
+    public string panelPath = "";
+    public string plaquePath = "";
+    public string[] platePaths = new string[] { "", "", "" };
+    public bool assetsReady;
+
+    // 载入贴图（找不到就退回纯色绘制，不崩）。
+    public void LoadAssets() {
+        this.tablePath = CardView.Find("assets/table_bg.png");
+        this.backPath = CardView.Find("assets/card_back.png");
+        this.avatarPath = CardView.Find("assets/avatar_frame.png");
+        this.panelPath = CardView.Find("assets/panel.png");
+        this.plaquePath = CardView.Find("assets/title_plaque.png");
+        this.platePaths[0] = CardView.Find("assets/card_common.png");
+        this.platePaths[1] = CardView.Find("assets/card_refined.png");
+        this.platePaths[2] = CardView.Find("assets/card_epic.png");
+        this.assetsReady = this.tablePath != "" && this.backPath != "";
+    }
+
+    static string Find(string rel) {
+        string p = Assets.Find(rel);
+        if (!File.Exists(p)) { return ""; }
+        return p;
+    }
+
+    // 稀有度底板的兜底纯色。
+    static int PlateFallback(int rarity) {
+        if (rarity == CardRarity.Refined) { return 0xFF1B2E44; }
+        if (rarity == CardRarity.Epic) { return 0xFF2A1836; }
+        return 0xFF232A31;
+    }
+
+    // 手牌区起始 x（按张数居中）。
+    public static int HandX(int count) {
+        if (count <= 0) { return CardView.DesignW / 2; }
+        int total = count * CardView.CardW + (count - 1) * CardView.CardGap;
+        return (CardView.DesignW - total) / 2;
+    }
+
+    // 构筑网格里第 index 张候选牌的矩形起点。
+    public static int BuildCellX(int index) {
+        int total = CardView.BuildCols * CardView.CardW
+            + (CardView.BuildCols - 1) * CardView.BuildGapX;
+        int x0 = (CardView.DesignW - total) / 2;
+        int col = index % CardView.BuildCols;
+        return x0 + col * (CardView.CardW + CardView.BuildGapX);
+    }
+
+    public static int BuildCellY(int index) {
+        int row = index / CardView.BuildCols;
+        return CardView.BuildTop + row * (CardView.CardH + CardView.BuildGapY);
+    }
+
+    // ----- 通用块 ---------------------------------------------------------
+
+    // 整幅牌桌背景。
+    public void DrawTable(Canvas c, int w, int h) {
+        if (this.tablePath != "") {
+            CDraw.BlitImage(c, this.tablePath, 0, 0, w, h);
+        } else {
+            CardPaint.VGrad(c, 0, 0, w, h, 0xFF16202B, 0xFF0A1018);
+        }
+        // 中央压暗，把视线收到桌心。
+        CardPaint.Fill(c, 0, 0, w, 64, 0x66000000);
+    }
+
+    // 血条。
+    public void DrawHpBar(Canvas c, int x, int y, int w, int h, int hp, int maxHp, int color) {
+        CardPaint.FillRound(c, x, y, w, h, 3, 0xFF10161E);
+        int fill = w * hp / maxHp;
+        if (fill < 0) { fill = 0; }
+        if (fill > w) { fill = w; }
+        if (fill > 0) {
+            CardPaint.FillRound(c, x, y, fill, h, 3, color);
+        }
+        CardPaint.Round(c, x, y, w, h, 3, 0xFF43525F, 1);
+    }
+
+    // 能量水晶。
+    public void DrawEnergy(Canvas c, int x, int y, int energy, int max) {
+        for (int i = 0; i < max; i = i + 1) {
+            int cx = x + i * 20;
+            bool on = i < energy;
+            CardPaint.FillCircle(c, cx + 8, y + 9, 7, on ? 0xFF4FA3E6 : 0xFF232C36);
+            CardPaint.Circle(c, cx + 8, y + 9, 7, on ? 0xFFA8D8FF : 0xFF3C4854, 1);
+        }
+        CardPaint.Text(c, "能量 " + Convert.ToString(energy), x + max * 20 + 8, y + 1,
+            15, 0xFF7FB2E5);
+    }
+
+    // 头像框（位图 + 里面的几何剪影）。
+    public void DrawAvatar(Canvas c, int x, int y, int size, bool player) {
+        if (this.avatarPath != "") {
+            CDraw.BlitImage(c, this.avatarPath, x, y, size, size);
+        } else {
+            CardPaint.FillRound(c, x, y, size, size, 6, 0xFF2A2418);
+        }
+        int cx = x + size / 2;
+        int cy = y + size / 2;
+        int skin = player ? 0xFF3E7BB8 : 0xFFB04A4A;
+        // 肩 + 头：纯几何剪影，位图只管边框。
+        CardPaint.FillRound(c, cx - size / 4, cy + size / 12, size / 2, size / 3, 4, skin);
+        CardPaint.FillCircle(c, cx, cy - size / 12, size / 6, skin);
+    }
+
+    // 按钮。
+    public void DrawButton(Canvas c, string label, int x, int y, int w, int h,
+                           bool enabled, bool hover, int kind) {
+        int bg = 0xFF24303C;
+        int edge = 0xFF3E5468;
+        int text = 0xFFEAF2F8;
+        if (kind == 1) { bg = 0xFF9A6B2E; edge = 0xFFE0B25C; text = 0xFFFFF3DC; }
+        if (kind == 2) { bg = 0xFF7A2830; edge = 0xFFD06A6A; }
+        if (!enabled) { bg = 0xFF20262D; edge = 0xFF39434D; text = 0xFF6E7A80; }
+        if (enabled && hover) {
+            if (kind == 1) { bg = 0xFFB9803A; }
+            else { bg = 0xFF2E3F50; }
+        }
+        CardPaint.FillRound(c, x, y, w, h, 6, bg);
+        CardPaint.Round(c, x, y, w, h, 6, edge, 2);
+        CardPaint.TextCentered(c, label, x + w / 2, y + (h - 18) / 2, w, 18, text);
+    }
+
+    // ----- 卡面 ------------------------------------------------------------
+
+    // 一张卡：位图底板 + 程序化文字与符号。
+    public void DrawCard(Canvas c, int cardId, int x, int y, int w, int h,
+                         bool selected, bool affordable) {
+        CardDef def = CardCard.ById(cardId);
+        if (def == null) { return; }
+        string plate = this.platePaths[def.rarity];
+        if (plate != "") {
+            CDraw.BlitImage(c, plate, x, y, w, h);
+        } else {
+            CardPaint.FillRound(c, x, y, w, h, 8, CardView.PlateFallback(def.rarity));
+        }
+        int edge = CardRarity.EdgeColor(def.rarity);
+        // 选中高亮：外描金边。
+        if (selected) {
+            CardPaint.Round(c, x - 3, y - 3, w + 6, h + 6, 9, 0xFFF0C874, 3);
+        }
+        // 能量不足：压暗 + 红色提示（能量够时不压暗）。
+        if (!affordable) { CardPaint.Fill(c, x, y, w, h, 0x88000000); }
+
+        // 费用徽章。
+        int badgeX = x + 22;
+        int badgeY = y + 24;
+        CardPaint.FillCircle(c, badgeX, badgeY, 15, 0xFF161B22);
+        CardPaint.Circle(c, badgeX, badgeY, 15, edge, 2);
+        CardPaint.TextCentered(c, Convert.ToString(def.cost), badgeX, badgeY - 10, 30, 19,
+            affordable ? 0xFFF2E4C0 : 0xFFE06A5A);
+
+        // 稀有度符号（右上角菱形）。
+        CardView.DrawDiamond(c, x + w - 20, y + 22, 12, edge);
+
+        // 卡名。
+        CardPaint.TextCentered(c, def.name, x + w / 2, y + 44, w, 17, 0xFFF0E6D2);
+        // 分隔线。
+        CardPaint.Fill(c, x + 16, y + 70, w - 32, 1, 0x66E0C89A);
+        // 效果说明（拆成两行）。
+        CardView.DrawDesc(c, def, x, y + 78, w);
+
+        // 数值 + 类型符号。
+        int valueColor = affordable ? 0xFFFFF0CC : 0xFFC08A80;
+        CardPaint.TextCentered(c, Convert.ToString(def.value), x + w / 2, y + 116, w, 28,
+            valueColor);
+        CardView.DrawKindIcon(c, def.kind, x + w / 2, y + 156, 18, edge);
+    }
+
+    // 效果说明：按 " · " 拆行，最多两行。
+    static void DrawDesc(Canvas c, CardDef def, int x, int y, int w) {
+        List<string> parts = def.desc.Split(" · ");
+        if (parts.Count >= 2) {
+            CardPaint.TextCentered(c, parts[0], x + w / 2, y, w, 12, 0xFFB9C6D2);
+            CardPaint.TextCentered(c, parts[1], x + w / 2, y + 16, w, 12, 0xFFB9C6D2);
+            return;
+        }
+        CardPaint.TextCentered(c, def.desc, x + w / 2, y + 6, w, 12, 0xFFB9C6D2);
+    }
+
+    // 稀有度符号：小菱形（5 条横带拼出）。
+    public static void DrawDiamond(Canvas c, int cx, int cy, int size, int color) {
+        CardPaint.Fill(c, cx - 2, cy - 5, 4, 2, color);
+        CardPaint.Fill(c, cx - 4, cy - 3, 8, 2, color);
+        CardPaint.Fill(c, cx - 6, cy - 1, 12, 2, color);
+        CardPaint.Fill(c, cx - 4, cy + 1, 8, 2, color);
+        CardPaint.Fill(c, cx - 2, cy + 3, 4, 2, color);
+    }
+
+    // 类型符号：纯几何（攻击=剑 / 防御=盾 / 抽牌=牌 / 治疗=十字 /
+    // 能量=菱形 / 灼烧=火苗）。
+    public static void DrawKindIcon(Canvas c, int kind, int cx, int cy, int size, int color) {
+        int h = size / 2;
+        if (kind == CardKind.Attack) {
+            CardPaint.Fill(c, cx - 2, cy - h, 4, size - 5, color);
+            CardPaint.Fill(c, cx - h, cy + h - 5, size, 3, color);
+            CardPaint.Fill(c, cx - 5, cy + h - 8, 10, 3, color);
+            return;
+        }
+        if (kind == CardKind.Guard) {
+            CardPaint.Fill(c, cx - h + 2, cy - h, size - 4, size - 8, color);
+            CardPaint.Fill(c, cx - h + 5, cy + 1, size - 10, 4, color);
+            CardPaint.Fill(c, cx - 3, cy + 5, 6, 4, color);
+            return;
+        }
+        if (kind == CardKind.Draw) {
+            CardPaint.FillRound(c, cx - h + 1, cy - h + 2, size - 6, size - 8, 2, color);
+            CardPaint.FillRound(c, cx - h + 5, cy - h + 6, size - 6, size - 8, 2, color);
+            return;
+        }
+        if (kind == CardKind.Heal) {
+            CardPaint.Fill(c, cx - 3, cy - h, 6, size, color);
+            CardPaint.Fill(c, cx - h, cy - 3, size, 6, color);
+            return;
+        }
+        if (kind == CardKind.Energy) {
+            CardPaint.Fill(c, cx - 2, cy - h, 4, size - 4, color);
+            CardPaint.Fill(c, cx - 7, cy - h + 4, 14, 4, color);
+            CardPaint.Fill(c, cx - 5, cy + h - 8, 10, 4, color);
+            return;
+        }
+        // 灼烧：火苗。
+        CardPaint.FillCircle(c, cx, cy + 3, h - 3, color);
+        CardPaint.Fill(c, cx - 3, cy - h, 6, h, color);
+        CardPaint.Fill(c, cx - 6, cy - h + 3, 12, 4, color);
+    }
+
+    // 卡背（对手手牌 / 牌堆）。
+    public void DrawCardBack(Canvas c, int x, int y, int w, int h) {
+        if (this.backPath != "") {
+            CDraw.BlitImage(c, this.backPath, x, y, w, h);
+            return;
+        }
+        CardPaint.FillRound(c, x, y, w, h, 6, 0xFF5A1E28);
+        CardPaint.Round(c, x, y, w, h, 6, 0xFFB98A3C, 2);
+    }
+
+    // ----- 菜单画面 --------------------------------------------------------
+
+    public void DrawMenu(Canvas c, int w, int h, int wins, int losses,
+                         int bestRounds, int runs) {
+        this.DrawTable(c, w, h);
+        if (this.plaquePath != "") {
+            CDraw.BlitImage(c, this.plaquePath, 340, 96, 600, 150);
+        } else {
+            CardPaint.FillRound(c, 340, 96, 600, 150, 12, 0xFF1A1410);
+        }
+        CardPaint.TextCentered(c, "卡牌竞技", 640, 116, 600, 52, 0xFFF3D28A);
+        CardPaint.TextCentered(c, "CARDARENA · 回合制卡牌对战", 640, 178, 600, 18, 0xFFB9C6D2);
+
+        CardPaint.FillRound(c, 390, 282, 500, 72, 8, 0xB0101820);
+        CardPaint.Round(c, 390, 282, 500, 72, 8, 0xFF8A6A2E, 1);
+        CardPaint.TextCentered(c,
+            "累计胜场 " + Convert.ToString(wins)
+            + "   累计败场 " + Convert.ToString(losses)
+            + "   累计场次 " + Convert.ToString(runs),
+            640, 294, 500, 17, 0xFFE8D8B8);
+        CardPaint.TextCentered(c,
+            "最高回合数 " + Convert.ToString(bestRounds),
+            640, 320, 500, 17, 0xFFC8B088);
+
+        CardPaint.TextCentered(c,
+            "从 12 张候选牌里选 8 张组成牌组，再与对手逐回合对战。",
+            640, 560, 1280, 17, 0xFFA8B6C2);
+        CardPaint.TextCentered(c,
+            "点击「构筑牌组」开始 · Esc 打开设置 · 鼠标左键选牌 / 出牌",
+            640, 588, 1280, 15, 0xFF8494A2);
+    }
+
+    // ----- 构筑画面 --------------------------------------------------------
+
+    public void DrawBuild(Canvas c, int w, int h, CardBuild build, int hoverIndex) {
+        this.DrawTable(c, w, h);
+        CardPaint.Fill(c, 0, 0, w, 76, 0xC00B1018);
+        CardPaint.Fill(c, 0, 76, w, 2, 0xFF8A6A2E);
+        CardPaint.Text(c, "牌组构筑", 24, 16, 30, 0xFFF3D28A);
+        string counter = "已选 " + Convert.ToString(build.pickedCount)
+            + " / " + Convert.ToString(CardBuild.DeckSize) + " 张";
+        int counterColor = build.Ready() ? 0xFF8FD8A6 : 0xFFE0B25C;
+        CardPaint.Text(c, counter, 24, 52, 18, counterColor);
+        CardPaint.TextRight(c, "每张牌入牌库 2 副本 · 牌库空了用弃牌堆重洗",
+            w - 24, 52, 15, 0xFF8494A2);
+
+        for (int i = 0; i < CardBuild.Candidates; i = i + 1) {
+            int id = build.order[i];
+            int x = CardView.BuildCellX(i);
+            int y = CardView.BuildCellY(i);
+            CardDef def = CardCard.ById(id);
+            bool picked = build.IsPicked(id);
+            // 候选牌用普通底板显示，选中与否靠金框与角标区分。
+            this.DrawBuildCard(c, def, x, y, picked, i == hoverIndex);
+        }
+
+        // 底部说明 + 按钮由 App 层画（按钮需要 hover 状态）。
+        CardPaint.TextCentered(c,
+            "点卡牌选中 / 取消；必须选满 " + Convert.ToString(CardBuild.DeckSize)
+            + " 张才能开战。牌组决定这局能不能赢。",
+            640, 640, 1280, 16, 0xFFA8B6C2);
+    }
+
+    void DrawBuildCard(Canvas c, CardDef def, int x, int y, bool picked, bool hover) {
+        if (def == null) { return; }
+        string plate = this.platePaths[def.rarity];
+        if (plate != "") {
+            CDraw.BlitImage(c, plate, x, y, CardView.CardW, CardView.CardH);
+        } else {
+            CardPaint.FillRound(c, x, y, CardView.CardW, CardView.CardH, 8,
+                CardView.PlateFallback(def.rarity));
+        }
+        int edge = CardRarity.EdgeColor(def.rarity);
+        if (picked) {
+            CardPaint.Round(c, x - 3, y - 3, CardView.CardW + 6, CardView.CardH + 6, 9,
+                0xFFF0C874, 3);
+            // 右上角「已选」角标。
+            CardPaint.FillCircle(c, x + CardView.CardW - 14, y + 14, 11, 0xFF3E8FD6);
+            CardPaint.TextCentered(c, "✓", x + CardView.CardW - 14, y + 6, 22, 15, 0xFFFFFFFF);
+        } else if (hover) {
+            CardPaint.Round(c, x - 2, y - 2, CardView.CardW + 4, CardView.CardH + 4, 8,
+                0xFF6E8CA8, 2);
+        }
+        int badgeX = x + 22;
+        int badgeY = y + 24;
+        CardPaint.FillCircle(c, badgeX, badgeY, 15, 0xFF161B22);
+        CardPaint.Circle(c, badgeX, badgeY, 15, edge, 2);
+        CardPaint.TextCentered(c, Convert.ToString(def.cost), badgeX, badgeY - 10, 30, 19,
+            0xFFF2E4C0);
+        int rx = x + CardView.CardW - 20;
+        int ry = y + 22;
+        CardView.DrawDiamond(c, rx, ry, 12, edge);
+        CardPaint.TextCentered(c, def.name, x + CardView.CardW / 2, y + 44, CardView.CardW, 17,
+            0xFFF0E6D2);
+        CardPaint.Fill(c, x + 16, y + 70, CardView.CardW - 32, 1, 0x66E0C89A);
+        CardView.DrawDesc(c, def, x, y + 78, CardView.CardW);
+        CardPaint.TextCentered(c, Convert.ToString(def.value), x + CardView.CardW / 2, y + 116,
+            CardView.CardW, 28, 0xFFFFF0CC);
+        CardView.DrawKindIcon(c, def.kind, x + CardView.CardW / 2, y + 156, 18, edge);
+    }
+
+    // ----- 对战画面 --------------------------------------------------------
+
+    public void DrawBattle(Canvas c, int w, int h, CardCombat combat, int selected,
+                           bool awaitingTarget, int hoverCard, int pulse) {
+        this.DrawTable(c, w, h);
+
+        // 顶栏。
+        CardPaint.Fill(c, 0, 0, w, 46, 0xC00B1018);
+        CardPaint.Fill(c, 0, 46, w, 2, 0xFF8A6A2E);
+        CardPaint.Text(c, "卡牌竞技 · CARDARENA", 20, 11, 20, 0xFFE8C86A);
+        CardPaint.TextCentered(c, "第 " + Convert.ToString(combat.round) + " 回合",
+            640, 13, 640, 18, 0xFFC8D8E8);
+        string turnName = combat.turn == CardCombat.PlayerSide ? "你的回合" : "对手回合";
+        CardPaint.Text(c, turnName, w - 300, 14, 17, 0xFF9FC4E0);
+
+        // 对手：头像（= 目标区）+ 血条 + 能量 + 手牌背 + 牌堆。
+        this.DrawAvatar(c, CardView.TargetX, CardView.TargetY, CardView.TargetW, false);
+        if (awaitingTarget) {
+            int r = CardView.TargetW / 2 + 6 + (pulse % 2) * 2;
+            CardPaint.Circle(c, CardView.TargetX + CardView.TargetW / 2,
+                CardView.TargetY + CardView.TargetH / 2, r, 0xFFF0C874, 3);
+            CardPaint.TextCentered(c, "点此出牌", CardView.TargetX + CardView.TargetW / 2,
+                CardView.TargetY + CardView.TargetH + 6, 120, 14, 0xFFF0C874);
+        }
+        CardPaint.Text(c, "对手", 148, 86, 18, 0xFFF0E6D2);
+        this.DrawHpBar(c, 148, 110, 240, 16, combat.aiHp, CardCombat.MaxHp, 0xFFB04A4A);
+        CardPaint.Text(c, combat.aiHp + "/" + Convert.ToString(CardCombat.MaxHp), 396, 109,
+            15, 0xFFE8D8B8);
+        this.DrawEnergy(c, 148, 134, combat.aiEnergy, combat.energyPerTurn);
+        CardPaint.Text(c, "格挡 " + Convert.ToString(combat.aiBlock), 300, 137, 14, 0xFF9FB4C4);
+
+        int backW = 56;
+        int backH = 79;
+        int backX = w - 40 - (combat.HandCountOf(CardCombat.AiSide) * backW
+            + (combat.HandCountOf(CardCombat.AiSide) - 1) * 6);
+        for (int i = 0; i < combat.HandCountOf(CardCombat.AiSide); i = i + 1) {
+            this.DrawCardBack(c, backX + i * (backW + 6), 60, backW, backH);
+        }
+        CardPaint.FillRound(c, 640, 56, 156, 56, 6, 0xB0101820);
+        CardPaint.Round(c, 640, 56, 156, 56, 6, 0x66E0C89A, 1);
+        CardPaint.Text(c, "牌库 " + Convert.ToString(combat.aiDeck.Remaining()), 654, 62, 14,
+            0xFFC8D8E8);
+        CardPaint.Text(c, "弃牌 " + Convert.ToString(combat.aiDeck.discardCount), 654, 84, 14,
+            0xFFC8D8E8);
+
+        // 桌心：回合横幅 + 最近事件。
+        CardPaint.FillRound(c, 420, 232, 440, 40, 8, 0xB0101820);
+        CardPaint.Round(c, 420, 232, 440, 40, 8, 0xFF8A6A2E, 1);
+        CardPaint.TextCentered(c, combat.message, 640, 244, 440, 16, 0xFFE8D8B8);
+
+        // 事件流水（最近 4 条）。
+        List<string> lines = combat.RecentLog(4);
+        int ly = 300;
+        for (int i = 0; i < lines.Count; i = i + 1) {
+            int col = 0xFF9FB4C4;
+            if (i == 1) { col = 0xC09FB4C4; }
+            else if (i >= 2) { col = 0x8A9FB4C4; }
+            CardPaint.Text(c, lines[i], 40, ly, 14, col);
+            ly = ly + 20;
+        }
+
+        // 玩家：头像 + 血条 + 能量。
+        this.DrawAvatar(c, 40, 448, CardView.TargetW, true);
+        CardPaint.Text(c, "你", 148, 450, 18, 0xFFF0E6D2);
+        this.DrawHpBar(c, 148, 474, 240, 16, combat.playerHp, CardCombat.MaxHp, 0xFF3E8FD6);
+        CardPaint.Text(c, combat.playerHp + "/" + Convert.ToString(CardCombat.MaxHp), 396, 473,
+            15, 0xFFE8D8B8);
+        this.DrawEnergy(c, 148, 498, combat.playerEnergy, combat.energyPerTurn);
+        CardPaint.Text(c, "格挡 " + Convert.ToString(combat.playerBlock), 300, 501, 14, 0xFF9FB4C4);
+
+        // 手牌。
+        int handCount = combat.HandCountOf(CardCombat.PlayerSide);
+        int hx = CardView.HandX(handCount);
+        for (int i = 0; i < handCount; i = i + 1) {
+            int cardId = combat.HandAt(CardCombat.PlayerSide, i);
+            CardDef def = CardCard.ById(cardId);
+            bool affordable = def != null && def.cost <= combat.playerEnergy;
+            bool isSel = i == selected;
+            int cy = CardView.HandY;
+            if (isSel) { cy = CardView.HandY - 20; }
+            if (i == hoverCard && !isSel) { cy = CardView.HandY - 8; }
+            this.DrawCard(c, cardId, hx + i * (CardView.CardW + CardView.CardGap), cy,
+                CardView.CardW, CardView.CardH, isSel, affordable);
+        }
+    }
+
+    // ----- 结算画面 --------------------------------------------------------
+
+    public void DrawResult(Canvas c, int w, int h, CardCombat combat, int wins,
+                           int losses, int bestRounds, int runs) {
+        CardPaint.Fill(c, 0, 0, w, h, 0xC0000000);
+        int px = 340;
+        int py = 176;
+        int pw = 600;
+        int ph = 452;
+        if (this.panelPath != "") {
+            CDraw.BlitImage(c, this.panelPath, px, py, pw, ph);
+        } else {
+            CardPaint.FillRound(c, px, py, pw, ph, 12, 0xFF1A1410);
+        }
+        CardPaint.Round(c, px, py, pw, ph, 12, 0xFF8A6A2E, 2);
+
+        string title = "平 局";
+        int titleColor = 0xFFE0C070;
+        if (combat.winner == CardCombat.PlayerSide) {
+            title = "胜 利";
+            titleColor = 0xFF8FD8A6;
+        } else if (combat.winner == CardCombat.AiSide) {
+            title = "战 败";
+            titleColor = 0xFFE08A7A;
+        }
+        CardPaint.TextCentered(c, title, px + pw / 2, py + 26, pw, 44, titleColor);
+        CardPaint.Fill(c, px + 60, py + 82, pw - 120, 1, 0x66E0C89A);
+
+        int ty = py + 100;
+        int playerHpShown = combat.playerHp;
+        int aiHpShown = combat.aiHp;
+        if (playerHpShown < 0) { playerHpShown = 0; }
+        if (aiHpShown < 0) { aiHpShown = 0; }
+        CardPaint.Text(c, "回合数", px + 60, ty, 17, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(combat.round), px + 300, ty, 17, 0xFFF0E6D2);
+        ty = ty + 30;
+        CardPaint.Text(c, "你的剩余生命", px + 60, ty, 17, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(playerHpShown), px + 300, ty, 17, 0xFF8FC8F0);
+        ty = ty + 30;
+        CardPaint.Text(c, "对手剩余生命", px + 60, ty, 17, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(aiHpShown), px + 300, ty, 17, 0xFFE08A7A);
+        ty = ty + 30;
+        CardPaint.Text(c, "你的剩余牌库", px + 60, ty, 17, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(combat.playerDeck.Remaining()), px + 300, ty, 17,
+            0xFFF0E6D2);
+        ty = ty + 30;
+        CardPaint.Text(c, "对手剩余牌库", px + 60, ty, 17, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(combat.aiDeck.Remaining()), px + 300, ty, 17,
+            0xFFF0E6D2);
+
+        ty = ty + 40;
+        CardPaint.Fill(c, px + 60, ty - 10, pw - 120, 1, 0x66E0C89A);
+        CardPaint.Text(c, "累计胜场", px + 60, ty, 16, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(wins), px + 300, ty, 16, 0xFF8FD8A6);
+        ty = ty + 26;
+        CardPaint.Text(c, "累计败场", px + 60, ty, 16, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(losses), px + 300, ty, 16, 0xFFE08A7A);
+        ty = ty + 26;
+        CardPaint.Text(c, "累计场次", px + 60, ty, 16, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(runs), px + 300, ty, 16, 0xFFF0E6D2);
+        ty = ty + 26;
+        CardPaint.Text(c, "最高回合数", px + 60, ty, 16, 0xFFB9C6D2);
+        CardPaint.Text(c, Convert.ToString(bestRounds), px + 300, ty, 16, 0xFFE0B25C);
+    }
+}

@@ -1,0 +1,442 @@
+using System;
+using System.Collections.Generic;
+using Game.Kit;
+
+// 卡牌竞技 · CARDARENA 玩法断言用例（无头）。
+//
+// 覆盖：卡牌目录 / 牌库抽牌与重洗 / 牌组构筑 / 能量与出牌 / 攻击与防御 /
+// 技能（抽牌·回血·加能量·灼烧）/ 回合推进 / AI 策略 / 胜负判定 /
+// 3 个种子的完整对局。
+//
+// 判据：全部断言通过则打印 "cardarena_test OK"。
+public class CardArenaTest {
+    static int failures = 0;
+    static int checks = 0;
+
+    static void Ok(bool cond, string label) {
+        checks = checks + 1;
+        if (!cond) {
+            failures = failures + 1;
+            Console.WriteLine("FAIL " + label);
+        }
+    }
+
+    static void Eq(int got, int want, string label) {
+        Ok(got == want, label + " got=" + Convert.ToString(got)
+            + " want=" + Convert.ToString(want));
+    }
+
+    static void EqS(string got, string want, string label) {
+        Ok(got == want, label + " got=" + got + " want=" + want);
+    }
+
+    // 把某一侧的手牌换成指定的一组牌（测试要确定性）。
+    static void SetHand(CardDeck deck, int[] ids) {
+        deck.handCount = 0;
+        for (int i = 0; i < ids.Length; i = i + 1) {
+            deck.hand[deck.handCount] = ids[i];
+            deck.handCount = deck.handCount + 1;
+        }
+    }
+
+    static int[] Deck16() {
+        int[] ids = new int[16];
+        for (int i = 0; i < 16; i = i + 1) { ids[i] = i % 12; }
+        return ids;
+    }
+
+    static CardCombat NewCombat(long seed) {
+        CardCombat c = new CardCombat(Rng.Seed(seed));
+        c.NewGame(Deck16(), CardBuild.AiDeckIds(), 3);
+        return c;
+    }
+
+    // ----- 目录 -----------------------------------------------------------
+
+    static void TestCatalog() {
+        List<CardDef> list = CardCard.Catalog();
+        Eq(list.Count, 12, "候选牌 12 张");
+        Eq(CardBuild.Candidates, 12, "构筑候选数 12");
+        bool namesOk = true;
+        bool idsOk = true;
+        bool costOk = true;
+        bool kindOk = true;
+        bool descOk = true;
+        int common = 0;
+        int refined = 0;
+        int epic = 0;
+        for (int i = 0; i < list.Count; i = i + 1) {
+            CardDef def = list[i];
+            if (def.id != i) { idsOk = false; }
+            if (def.name == "" || def.name.Length < 2) { namesOk = false; }
+            if (def.cost < 0 || def.cost > 4) { costOk = false; }
+            if (def.kind < 0 || def.kind > 5) { kindOk = false; }
+            if (def.kind2 >= 0 && def.kind2 > 5) { kindOk = false; }
+            if (def.desc == "") { descOk = false; }
+            if (def.rarity == CardRarity.Common) { common = common + 1; }
+            else if (def.rarity == CardRarity.Refined) { refined = refined + 1; }
+            else { epic = epic + 1; }
+        }
+        Ok(namesOk, "每张牌都有名字");
+        Ok(idsOk, "牌 id 与下标一致");
+        Ok(costOk, "费用在 0..4");
+        Ok(kindOk, "效果类型合法");
+        Ok(descOk, "每张牌都有效果说明");
+        Eq(common, 5, "普通牌 5 张");
+        Eq(refined, 4, "精良牌 4 张");
+        Eq(epic, 3, "史诗牌 3 张");
+        // 名字不重复。
+        bool unique = true;
+        for (int i = 0; i < list.Count; i = i + 1) {
+            for (int j = i + 1; j < list.Count; j = j + 1) {
+                if (list[i].name == list[j].name) { unique = false; }
+            }
+        }
+        Ok(unique, "牌名不重复");
+        // 攻击牌要选目标，防御/治疗牌不用。
+        CardDef atk = CardCard.ById(0);
+        CardDef guard = CardCard.ById(1);
+        CardDef heal = CardCard.ById(4);
+        CardDef burn = CardCard.ById(9);
+        CardDef dragon = CardCard.ById(11);
+        Ok(atk != null && atk.NeedsTarget(), "攻击牌需要选目标");
+        Ok(guard != null && !guard.NeedsTarget(), "防御牌不需要选目标");
+        Ok(heal != null && !heal.NeedsTarget(), "治疗牌不需要选目标");
+        Ok(burn != null && burn.NeedsTarget(), "带灼烧的攻击牌需要选目标");
+        Ok(dragon != null && dragon.value == 17, "巨龙之怒伤害 17");
+        Ok(dragon != null && dragon.cost == 4, "巨龙之怒费用 4");
+        EqS(CardRarity.Name(CardRarity.Epic), "史诗", "史诗稀有度名");
+        Ok(CardCard.ById(-1) == null, "越界 id 返回 null");
+        Ok(CardCard.ById(99) == null, "越界 id 返回 null（高）");
+    }
+
+    // ----- 牌库 -----------------------------------------------------------
+
+    static void TestDeck() {
+        CardDeck deck = new CardDeck();
+        deck.Load(Deck16());
+        Eq(deck.count, 16, "装入 16 张牌");
+        Eq(deck.handCount, 0, "初始手牌 0 张");
+        Eq(deck.discardCount, 0, "初始弃牌 0 张");
+        // 洗牌改变顺序。
+        int[] before = new int[deck.count];
+        for (int i = 0; i < deck.count; i = i + 1) { before[i] = deck.cards[i]; }
+        deck.Shuffle(Rng.Seed(12345L));
+        bool changed = false;
+        for (int i = 0; i < deck.count; i = i + 1) {
+            if (deck.cards[i] != before[i]) { changed = true; }
+        }
+        Ok(changed, "洗牌后顺序改变");
+        // 抽牌。
+        Rng rng = Rng.Seed(777L);
+        int id = deck.Draw(rng);
+        Ok(id >= 0, "抽到一张牌");
+        Eq(deck.handCount, 1, "抽牌后手牌 1 张");
+        Eq(deck.count, 15, "抽牌后牌库剩 15 张");
+        // 手牌上限 5 张。
+        while (deck.handCount < CardDeck.MaxHand) { deck.Draw(rng); }
+        Eq(deck.handCount, 5, "抽满 5 张手牌");
+        Ok(deck.Draw(rng) < 0, "手牌满时抽不到牌");
+        Eq(deck.handCount, 5, "手牌数不超过 5");
+        Eq(CardDeck.MaxHand, 5, "手牌上限常量 5");
+        // 弃牌 + 重洗。
+        deck.Discard(3);
+        deck.Discard(7);
+        Eq(deck.discardCount, 2, "弃牌 2 张");
+        while (deck.count > 0) { deck.count = deck.count - 1; }
+        Eq(deck.count, 0, "牌库清空");
+        // 手满时抽不到牌，先腾出两个位置。
+        deck.RemoveFromHand(0);
+        deck.RemoveFromHand(0);
+        Eq(deck.handCount, 3, "手牌腾出 2 个位置");
+        int drawn = deck.Draw(rng);
+        Ok(drawn >= 0, "牌库空时用弃牌堆重洗后抽到牌");
+        Eq(deck.reshuffleCount, 1, "重洗次数 1");
+        Eq(deck.discardCount, 0, "重洗后弃牌堆清空");
+        Ok(deck.count > 0, "重洗后牌库有货");
+        // 移除手牌。
+        int removed = deck.RemoveFromHand(0);
+        Ok(removed >= 0, "能移除手牌");
+        Eq(deck.handCount, 3, "移除后手牌 3 张");
+        Ok(deck.RemoveFromHand(99) < 0, "越界移除返回 -1");
+    }
+
+    // ----- 构筑 -----------------------------------------------------------
+
+    static void TestBuild() {
+        CardBuild build = new CardBuild();
+        Eq(build.pickedCount, 0, "初始已选 0 张");
+        Ok(!build.Ready(), "没选满不能开战");
+        Ok(build.Toggle(0), "选中第 1 张");
+        Eq(build.pickedCount, 1, "已选 1 张");
+        Ok(build.IsPicked(0), "第 1 张已选中");
+        Ok(build.Toggle(0), "取消第 1 张");
+        Eq(build.pickedCount, 0, "取消后已选 0 张");
+        Ok(!build.Toggle(99), "越界候选选不上");
+        for (int i = 0; i < 8; i = i + 1) { build.Toggle(i); }
+        Eq(build.pickedCount, 8, "选满 8 张");
+        Ok(build.Ready(), "选满 8 张可以开战");
+        Ok(!build.Toggle(8), "超过 8 张选不上");
+        int[] ids = build.DeckIds();
+        Eq(ids.Length, 16, "牌组 16 张（8 张 × 2 副本）");
+        int[] counts = new int[12];
+        for (int i = 0; i < ids.Length; i = i + 1) { counts[ids[i]] = counts[ids[i]] + 1; }
+        bool twoEach = true;
+        for (int i = 0; i < 8; i = i + 1) {
+            if (counts[i] != 2) { twoEach = false; }
+        }
+        Ok(twoEach, "每张选中的牌 2 副本");
+        // 随机选牌。
+        CardBuild random = new CardBuild();
+        random.Randomize(Rng.Seed(4242L));
+        Eq(random.pickedCount, 8, "随机选牌也是 8 张");
+        Ok(random.Ready(), "随机选牌后可以开战");
+        // 洗展示顺序。
+        CardBuild shuffled = new CardBuild();
+        int[] order0 = new int[12];
+        for (int i = 0; i < 12; i = i + 1) { order0[i] = shuffled.order[i]; }
+        shuffled.ShuffleOrder(Rng.Seed(99L));
+        bool orderChanged = false;
+        for (int i = 0; i < 12; i = i + 1) {
+            if (shuffled.order[i] != order0[i]) { orderChanged = true; }
+        }
+        Ok(orderChanged, "洗牌改变候选展示顺序");
+        // 对手牌组固定 16 张。
+        Eq(CardBuild.AiDeckIds().Length, 16, "对手牌组 16 张");
+    }
+
+    // ----- 开局 -----------------------------------------------------------
+
+    static void TestInit() {
+        CardCombat c = NewCombat(20261021L);
+        Eq(c.playerHp, 30, "玩家满血 30");
+        Eq(c.aiHp, 30, "对手满血 30");
+        Eq(c.playerEnergy, 3, "玩家能量 3");
+        Eq(c.aiEnergy, 3, "对手能量 3");
+        Eq(c.HandCountOf(CardCombat.PlayerSide), 5, "玩家起手 5 张");
+        Eq(c.HandCountOf(CardCombat.AiSide), 5, "对手起手 5 张");
+        Eq(c.round, 1, "第 1 回合");
+        Eq(c.turn, CardCombat.PlayerSide, "玩家先手");
+        Eq(c.playerDeck.Remaining(), 11, "玩家牌库剩 11 张");
+        Ok(!c.over, "开局没结束");
+        Ok(c.message != "", "开局有提示语");
+    }
+
+    // ----- 能量与出牌 ------------------------------------------------------
+
+    static void TestEnergy() {
+        CardCombat c = NewCombat(1L);
+        SetHand(c.playerDeck, new int[] { 11 });   // 巨龙之怒，费用 4
+        c.playerEnergy = 3;
+        bool played = c.Play(CardCombat.PlayerSide, 0, CardCombat.AiSide);
+        Ok(!played, "能量不足时不出牌");
+        Eq(c.playerEnergy, 3, "能量不足时能量不变");
+        Eq(c.HandCountOf(CardCombat.PlayerSide), 1, "能量不足时手牌不变");
+        Ok(c.message.Contains("能量不足"), "能量不足有明确提示：" + c.message);
+        // 能量够：出牌扣能量。
+        c.playerEnergy = 4;
+        int aiHpBefore = c.aiHp;
+        bool played2 = c.Play(CardCombat.PlayerSide, 0, CardCombat.AiSide);
+        Ok(played2, "能量够时出牌成功");
+        Eq(c.playerEnergy, 0, "出牌后能量扣光");
+        Eq(c.HandCountOf(CardCombat.PlayerSide), 0, "出牌后手牌少一张");
+        Eq(c.aiHp, aiHpBefore - 17, "攻击结算扣对手血量");
+        Ok(c.playerDeck.discardCount >= 1, "打出的牌进弃牌堆");
+    }
+
+    // ----- 攻击 / 防御 ------------------------------------------------------
+
+    static void TestAttackAndGuard() {
+        CardCombat c = NewCombat(2L);
+        SetHand(c.playerDeck, new int[] { 0 });    // 短剑斩，3 伤害
+        SetHand(c.aiDeck, new int[] { 0 });
+        int hpBefore = c.aiHp;
+        c.Play(CardCombat.PlayerSide, 0, CardCombat.AiSide);
+        Eq(c.aiHp, hpBefore - 3, "短剑斩扣 3 血");
+        Eq(c.aiBlock, 0, "没格挡时对手不挡");
+        // 防御：格挡吸收伤害。
+        CardCombat g = NewCombat(3L);
+        SetHand(g.playerDeck, new int[] { 1 });   // 铁壁格挡，4 格挡
+        SetHand(g.aiDeck, new int[] { 0 });       // 短剑斩，3 伤害
+        g.Play(CardCombat.PlayerSide, 0, CardCombat.AiSide);
+        Eq(g.playerBlock, 4, "防御后有 4 点格挡");
+        g.PassTurn();                             // 交给对手
+        Eq(g.turn, CardCombat.AiSide, "回合交给对手");
+        g.Play(CardCombat.AiSide, 0, CardCombat.PlayerSide);
+        Eq(g.playerHp, 30, "被格挡后不掉血");
+        Eq(g.playerBlock, 1, "格挡被消耗");
+    }
+
+    // ----- 技能 ------------------------------------------------------------
+
+    static void TestSkills() {
+        // 抽牌：手牌不满时抽 2 张。
+        CardCombat c = NewCombat(4L);
+        SetHand(c.playerDeck, new int[] { 2 });    // 战术抽牌，抽 2
+        int handBefore = c.HandCountOf(CardCombat.PlayerSide);
+        c.Play(CardCombat.PlayerSide, 0, CardCombat.PlayerSide);
+        Eq(c.HandCountOf(CardCombat.PlayerSide), handBefore + 1, "抽牌后手牌变多");
+        Ok(c.HandCountOf(CardCombat.PlayerSide) <= 5, "抽牌后手牌不超过 5");
+        // 回血。
+        CardCombat h = NewCombat(5L);
+        SetHand(h.playerDeck, new int[] { 4 });    // 战地医师，回复 6
+        h.playerHp = 20;
+        h.Play(CardCombat.PlayerSide, 0, CardCombat.PlayerSide);
+        Eq(h.playerHp, 26, "回血 6 点");
+        // 回血不超过上限。
+        CardCombat h2 = NewCombat(6L);
+        SetHand(h2.playerDeck, new int[] { 10 });  // 不死鸟再生，回复 12
+        h2.playerHp = 25;
+        h2.Play(CardCombat.PlayerSide, 0, CardCombat.PlayerSide);
+        Eq(h2.playerHp, 30, "回血不超过上限 30");
+        // 加能量。
+        CardCombat e = NewCombat(7L);
+        SetHand(e.playerDeck, new int[] { 8 });    // 能量涌动，+2 能量
+        e.playerEnergy = 3;
+        e.Play(CardCombat.PlayerSide, 0, CardCombat.PlayerSide);
+        Eq(e.playerEnergy, 5, "能量涌动 +2 能量");
+        // 持续伤害：灼烧在对方回合开始时扣血。
+        CardCombat b = NewCombat(8L);
+        SetHand(b.playerDeck, new int[] { 9 });    // 烈焰风暴：11 伤害 + 灼烧 3
+        b.Play(CardCombat.PlayerSide, 0, CardCombat.AiSide);
+        Eq(b.aiBurn, 3, "对手被叠 3 层灼烧");
+        int aiHpAfterHit = b.aiHp;
+        b.PassTurn();
+        Eq(b.aiHp, aiHpAfterHit - 3, "灼烧在对手回合开始扣 3 血");
+        Eq(b.aiBurn, 2, "灼烧层数递减");
+    }
+
+    // ----- 回合 ------------------------------------------------------------
+
+    static void TestTurns() {
+        CardCombat c = NewCombat(9L);
+        Eq(c.round, 1, "初始回合 1");
+        c.PassTurn();
+        Eq(c.turn, CardCombat.AiSide, "回合交给对手");
+        Eq(c.round, 1, "对手回合不涨回合数");
+        c.PassTurn();
+        Eq(c.turn, CardCombat.PlayerSide, "回合回到玩家");
+        Eq(c.round, 2, "回到玩家时回合数 +1");
+        Eq(c.playerEnergy, 3, "新回合能量回满");
+        Eq(c.playerBlock, 0, "新回合格挡清零");
+    }
+
+    // ----- AI --------------------------------------------------------------
+
+    static void TestAi() {
+        CardCombat c = NewCombat(10L);
+        // 手牌只有一张攻击牌 → 必须出攻击牌。
+        SetHand(c.aiDeck, new int[] { 0 });
+        c.aiEnergy = 3;
+        int pick = CardAi.Choose(c, CardCombat.AiSide, 2);
+        Eq(pick, 0, "AI 会出攻击牌");
+        // 血少时优先回血。
+        CardCombat low = NewCombat(11L);
+        SetHand(low.aiDeck, new int[] { 4, 0 });   // 战地医师 + 短剑斩
+        low.aiHp = 9;
+        low.aiEnergy = 3;
+        int pick2 = CardAi.Choose(low, CardCombat.AiSide, 2);
+        Eq(pick2, 0, "血少时 AI 优先回血");
+        // 手牌少时优先抽牌（没有攻击牌可打）。
+        CardCombat few = NewCombat(12L);
+        SetHand(few.aiDeck, new int[] { 2 });      // 只有战术抽牌
+        few.aiEnergy = 3;
+        int pick3 = CardAi.Choose(few, CardCombat.AiSide, 2);
+        Eq(pick3, 0, "手牌少时 AI 优先抽牌");
+        // 没有能出的牌 → 返回 -1（结束回合）。
+        CardCombat none = NewCombat(13L);
+        SetHand(none.aiDeck, new int[] { 11 });    // 巨龙之怒，费用 4
+        none.aiEnergy = 1;
+        int pick4 = CardAi.Choose(none, CardCombat.AiSide, 2);
+        Eq(pick4, -1, "没有付得起的牌时 AI 结束回合");
+        // 简单难度不会回血：优先打攻击牌。
+        CardCombat easy = NewCombat(14L);
+        SetHand(easy.aiDeck, new int[] { 4, 0 });
+        easy.aiHp = 5;
+        easy.aiEnergy = 3;
+        int pick5 = CardAi.Choose(easy, CardCombat.AiSide, 1);
+        Eq(pick5, 1, "简单难度直接打脸");
+        // AI 真的能出牌（走一步）。
+        CardCombat step = NewCombat(15L);
+        SetHand(step.aiDeck, new int[] { 0 });
+        step.aiEnergy = 3;
+        int hpBefore = step.playerHp;
+        bool acted = CardAi.Step(step, CardCombat.AiSide, 2);
+        Ok(acted, "AI 走一步出了牌");
+        Eq(step.playerHp, hpBefore - 3, "AI 的攻击牌真的扣血");
+    }
+
+    // ----- 胜负 ------------------------------------------------------------
+
+    static void TestWin() {
+        CardCombat c = NewCombat(16L);
+        SetHand(c.playerDeck, new int[] { 11 });   // 巨龙之怒 17 伤害
+        c.aiHp = 10;
+        c.playerEnergy = 4;
+        c.Play(CardCombat.PlayerSide, 0, CardCombat.AiSide);
+        Ok(c.over, "对手 HP <= 0 判结束");
+        Eq(c.winner, CardCombat.PlayerSide, "玩家判胜");
+        Ok(c.message.Contains("击败"), "结算有提示语");
+        // 反过来：玩家被打死判负。
+        CardCombat lose = NewCombat(17L);
+        SetHand(lose.aiDeck, new int[] { 11 });
+        lose.playerHp = 5;
+        lose.aiEnergy = 4;
+        lose.Play(CardCombat.AiSide, 0, CardCombat.PlayerSide);
+        Ok(lose.over, "玩家 HP <= 0 判结束");
+        Eq(lose.winner, CardCombat.AiSide, "玩家判负");
+    }
+
+    // ----- 完整对局（3 个种子）----------------------------------------------
+
+    static void TestFullGame() {
+        long[] seeds = new long[] { 20261021L, 13579L, 2468013L };
+        for (int s = 0; s < seeds.Length; s = s + 1) {
+            CardCombat c = new CardCombat(Rng.Seed(seeds[s]));
+            c.NewGame(CardBuild.AiDeckIds(), CardBuild.AiDeckIds(), 3);
+            int steps = 0;
+            while (!c.over && steps < 4000) {
+                CardAi.Step(c, c.turn, 2);
+                steps = steps + 1;
+            }
+            string tag = "种子" + Convert.ToString(seeds[s]);
+            Ok(c.over, tag + " 对局能走到结束 steps=" + Convert.ToString(steps));
+            Ok(steps < 4000, tag + " 没死循环");
+            Ok(c.round >= 1, tag + " 回合数自洽 round=" + Convert.ToString(c.round));
+            bool someoneDead = c.playerHp <= 0 || c.aiHp <= 0;
+            Ok(someoneDead || c.winner == -1, tag + " 有一方倒下或判平局");
+            Ok(c.playerHp <= 30 && c.aiHp <= 30, tag + " 血量不超过上限");
+            Ok(c.playerHp > 0 || c.aiHp > 0, tag + " 不会两边同时归零");
+            Ok(c.HandCountOf(CardCombat.PlayerSide) <= 5, tag + " 玩家手牌不超过 5 张");
+            Ok(c.HandCountOf(CardCombat.AiSide) <= 5, tag + " 对手手牌不超过 5 张");
+            Ok(c.playerEnergy <= 10 && c.aiEnergy <= 10, tag + " 能量不超过上限");
+            Ok(c.playedCount > 0, tag + " 有出牌记录");
+            Ok(c.log.Count > 0, tag + " 有事件流水");
+            // 牌守恒：牌库 + 弃牌 + 手牌 = 16。
+            int total = c.playerDeck.count + c.playerDeck.discardCount
+                + c.playerDeck.handCount;
+            Eq(total, 16, tag + " 玩家牌的总数守恒");
+        }
+    }
+
+    static void Main() {
+        TestCatalog();
+        TestDeck();
+        TestBuild();
+        TestInit();
+        TestEnergy();
+        TestAttackAndGuard();
+        TestSkills();
+        TestTurns();
+        TestAi();
+        TestWin();
+        TestFullGame();
+        Console.WriteLine("cardarena_test checks=" + Convert.ToString(checks)
+            + " failures=" + Convert.ToString(failures));
+        if (failures > 0) {
+            Console.WriteLine("cardarena_test FAILED");
+            return;
+        }
+        Console.WriteLine("cardarena_test OK");
+    }
+}

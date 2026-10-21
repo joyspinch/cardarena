@@ -1,0 +1,117 @@
+using System;
+using Game.Kit;
+
+// 一副牌：牌库（抽牌堆）、手牌、弃牌堆。
+//
+// 抽牌堆空了就把弃牌堆洗回去（重洗）——标准卡牌规则，也是"牌库空了
+// 弃牌堆重洗"这条规则的落点。手牌上限 5 张，手满时抽牌失败（返回 -1）。
+public class CardDeck {
+    public const int MaxHand = 5;
+    public const int MaxCards = 64;
+
+    public int[] cards;        // 抽牌堆（cards[0..count-1]）
+    public int count;
+    public int[] hand;
+    public int handCount;
+    public int[] discard;
+    public int discardCount;
+    public int reshuffleCount; // 重洗次数（诊断与断言用）
+
+    public CardDeck() {
+        this.cards = new int[CardDeck.MaxCards];
+        this.count = 0;
+        this.hand = new int[CardDeck.MaxHand];
+        this.handCount = 0;
+        this.discard = new int[CardDeck.MaxCards];
+        this.discardCount = 0;
+        this.reshuffleCount = 0;
+    }
+
+    // 装载一副新牌（洗牌在调用方做）。
+    public void Load(int[] ids) {
+        this.count = 0;
+        this.handCount = 0;
+        this.discardCount = 0;
+        this.reshuffleCount = 0;
+        if (ids == null) { return; }
+        for (int i = 0; i < ids.Length; i = i + 1) {
+            if (this.count >= CardDeck.MaxCards) { break; }
+            this.cards[this.count] = ids[i];
+            this.count = this.count + 1;
+        }
+    }
+
+    // 原地洗牌（Fisher-Yates）。
+    public void Shuffle(Rng rng) {
+        if (rng == null) { return; }
+        for (int i = this.count - 1; i > 0; i = i - 1) {
+            int j = rng.Range(0, i + 1);
+            int t = this.cards[i];
+            this.cards[i] = this.cards[j];
+            this.cards[j] = t;
+        }
+    }
+
+    // 抽一张牌：手牌满 5 张或无牌可抽时返回 -1。
+    public int Draw(Rng rng) {
+        if (this.handCount >= CardDeck.MaxHand) { return -1; }
+        if (this.count == 0) {
+            if (!this.Reshuffle(rng)) { return -1; }
+        }
+        this.count = this.count - 1;
+        int id = this.cards[this.count];
+        this.hand[this.handCount] = id;
+        this.handCount = this.handCount + 1;
+        return id;
+    }
+
+    // 连抽 n 张，返回实际抽到的张数。
+    public int DrawN(Rng rng, int n) {
+        int got = 0;
+        for (int i = 0; i < n; i = i + 1) {
+            if (this.Draw(rng) < 0) { break; }
+            got = got + 1;
+        }
+        return got;
+    }
+
+    // 弃牌堆洗回牌库。弃牌堆为空时返回 false。
+    public bool Reshuffle(Rng rng) {
+        if (this.discardCount <= 0) { return false; }
+        for (int i = 0; i < this.discardCount; i = i + 1) {
+            if (this.count >= CardDeck.MaxCards) { break; }
+            this.cards[this.count] = this.discard[i];
+            this.count = this.count + 1;
+        }
+        this.discardCount = 0;
+        this.reshuffleCount = this.reshuffleCount + 1;
+        this.Shuffle(rng);
+        return true;
+    }
+
+    // 弃掉一张牌（进入弃牌堆）。
+    public void Discard(int id) {
+        if (this.discardCount >= CardDeck.MaxCards) { return; }
+        this.discard[this.discardCount] = id;
+        this.discardCount = this.discardCount + 1;
+    }
+
+    public int HandAt(int index) { return this.hand[index]; }
+
+    // 从手牌移除第 index 张，返回牌 id（越界返回 -1）。
+    public int RemoveFromHand(int index) {
+        if (index < 0 || index >= this.handCount) { return -1; }
+        int id = this.hand[index];
+        for (int i = index; i < this.handCount - 1; i = i + 1) {
+            this.hand[i] = this.hand[i + 1];
+        }
+        this.handCount = this.handCount - 1;
+        return id;
+    }
+
+    // 抽牌堆里还剩多少张。
+    public int Remaining() { return this.count; }
+
+    // 还有没有牌可抽（抽牌堆或弃牌堆里有货）。
+    public bool HasCards() { return this.count > 0 || this.discardCount > 0; }
+}

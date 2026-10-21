@@ -1,8 +1,9 @@
-# 千军牌局 构建：编译 client/src/ 下全部 .zan → 可执行文件。
+# 卡牌竞技 构建：编译 client/src/ 下全部 .zan → 可执行文件。
 #
 # 公共包（Gui / Game.Kit / Game.Foundation / Game.Tactics …）住在 zan-lang
-# 仓库的 packages/ 下，编译要带 --package-project 指向包根：仓库内 = 仓库根；
-# 项目搬到仓库外后 = zan-lang 仓库，由 $ZAN_HOME 或 -PackageProject 指定。
+# 仓库的 packages/ 下，编译要带 --package-project 指向**包根所在的仓库根**：
+# 仓库内 = 仓库根；项目搬到仓库外后 = zan-lang 仓库，由 $env:ZAN_HOME 或
+# -PackageProject 指定。
 # assets/ 由 zanc 自动内嵌进 exe（入口源文件带目录前缀时才会定位到），
 # 这里再在 exe 旁留一份磁盘副本——运行时磁盘优先，换图即生效。
 param(
@@ -10,7 +11,9 @@ param(
     [string]$Stdlib = $env:ZAN_STDLIB,
     [string]$Output = '',
     [string]$PackageProject = '',
-    # 透传给 zanc 的额外参数（如 --publish --target android-arm64 ...）
+    # 发布成单文件 exe（自带运行库与资源）
+    [switch]$Publish,
+    # 透传给 zanc 的额外参数（如 --target android-arm64 ...）
     [string[]]$ZancArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -18,10 +21,30 @@ $project = Split-Path -Parent $PSScriptRoot
 $repo = Split-Path -Parent $project
 if (-not $Compiler) {
     $local = if ($env:ZAN_HOME) { Join-Path $env:ZAN_HOME 'build/zanc.exe' } else { '' }
-    if ($local -and (Test-Path $local)) { $Compiler = $local } else { $Compiler = (Get-Command zanc -ErrorAction Stop).Source }
+    if ($local -and (Test-Path $local)) {
+        $Compiler = $local
+    } else {
+        $cmd = Get-Command zanc -ErrorAction SilentlyContinue
+        if ($cmd) {
+            $Compiler = $cmd.Source
+        } else {
+            # 兜底：工作区里固定位置的编译器（可用 -Compiler 覆盖）。
+            $fallback = 'D:/project/zan-lang/build/zanc.exe'
+            if (-not (Test-Path $fallback)) {
+                throw '找不到 zanc：请设 $env:ZAN_HOME、$env:ZANC，或用 -Compiler 指定编译器路径'
+            }
+            $Compiler = $fallback
+        }
+    }
 }
 if (-not $Stdlib -and $env:ZAN_HOME) { $Stdlib = Join-Path $env:ZAN_HOME 'stdlib' }
-if (-not $PackageProject) { if ($env:ZAN_HOME) { $PackageProject = $env:ZAN_HOME } else { throw '需要 $env:ZAN_HOME 指向 zan-lang 仓库（公共包在它的 packages/ 下）' } }
+if (-not $PackageProject) {
+    if ($env:ZAN_HOME) {
+        $PackageProject = $env:ZAN_HOME
+    } else {
+        throw '需要 -PackageProject 指向含 packages/ 的仓库根（如 D:/project/zan-head）'
+    }
+}
 if (-not $Output) { $Output = Join-Path $repo 'build/cardarena' }
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
@@ -35,11 +58,23 @@ $sources += @(Get-ChildItem (Join-Path $project 'src') -Recurse -File -Filter *.
     Where-Object { $_.FullName -ne $entry } | Sort-Object FullName | ForEach-Object { $_.FullName })
 $zargs = @($sources) + @('--auto-stdlib', '--package-project', $PackageProject)
 if ($Stdlib) { $zargs += @('--stdlib-path', $Stdlib) }
+if ($Publish) { $zargs += @('--publish') }
 if ($ZancArgs) { $zargs += $ZancArgs }
 $exe = Join-Path $Output 'Cardarena.exe'
 $zargs += @('-o', $exe)
 & $Compiler @zargs
 if ($LASTEXITCODE -ne 0) { throw "zanc failed ($LASTEXITCODE)" }
+# 素材拷到 exe 旁（拷**内容**，不是目录本身——否则重跑会套出 assets/assets）。
+# 下划线开头的是一次性自检文件，不进 exe。
 $assets = Join-Path $project 'assets'
-if (Test-Path $assets) { Copy-Item $assets $Output -Recurse -Force }
+if (Test-Path $assets) {
+    $dest = Join-Path $Output 'assets'
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Get-ChildItem $assets -Recurse -File | Where-Object { -not $_.Name.StartsWith('_') } |
+        ForEach-Object {
+            $target = Join-Path $dest $_.FullName.Substring($assets.Length + 1)
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Copy-Item $_.FullName $target -Force
+        }
+}
 Write-Host "Built $exe"

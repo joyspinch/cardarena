@@ -1,0 +1,111 @@
+using System;
+using Game.Kit;
+
+// 牌组构筑：12 张候选牌里选 8 张组成牌组（每张 2 副本 = 16 张的牌库）。
+//
+// 构筑结果**直接决定这局能不能赢**：全选治疗/防御就没有伤害输出，
+// 全选高费史诗又抽不到牌——所以界面要能看到每张牌的费用与效果。
+public class CardBuild {
+    public const int Candidates = 12;
+    public const int DeckSize = 8;
+    public const int Copies = 2;
+
+    public bool[] picked;      // 按候选 id 记录是否选中
+    public int pickedCount;
+    public int[] order;        // 展示顺序（候选 id）
+
+    public CardBuild() {
+        this.picked = new bool[CardBuild.Candidates];
+        this.pickedCount = 0;
+        this.order = new int[CardBuild.Candidates];
+        for (int i = 0; i < CardBuild.Candidates; i = i + 1) {
+            this.order[i] = i;
+            this.picked[i] = false;
+        }
+    }
+
+    // 选中 / 取消选中。已选满 8 张时不能再加。
+    public bool Toggle(int candidateId) {
+        if (candidateId < 0 || candidateId >= CardBuild.Candidates) { return false; }
+        if (this.picked[candidateId]) {
+            this.picked[candidateId] = false;
+            this.pickedCount = this.pickedCount - 1;
+            return true;
+        }
+        if (this.pickedCount >= CardBuild.DeckSize) { return false; }
+        this.picked[candidateId] = true;
+        this.pickedCount = this.pickedCount + 1;
+        return true;
+    }
+
+    public bool IsPicked(int candidateId) {
+        if (candidateId < 0 || candidateId >= CardBuild.Candidates) { return false; }
+        return this.picked[candidateId];
+    }
+
+    // 选满 8 张才能开战。
+    public bool Ready() { return this.pickedCount == CardBuild.DeckSize; }
+
+    // 随机选 8 张。
+    public void Randomize(Rng rng) {
+        if (rng == null) { return; }
+        int[] pool = new int[CardBuild.Candidates];
+        for (int i = 0; i < CardBuild.Candidates; i = i + 1) {
+            pool[i] = i;
+            this.picked[i] = false;
+        }
+        this.pickedCount = 0;
+        for (int i = pool.Length - 1; i > 0; i = i - 1) {
+            int j = rng.Range(0, i + 1);
+            int t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+        }
+        for (int i = 0; i < CardBuild.DeckSize; i = i + 1) {
+            this.picked[pool[i]] = true;
+        }
+        this.pickedCount = CardBuild.DeckSize;
+    }
+
+    // 洗展示顺序（界面上 12 张候选牌的排列）。
+    public void ShuffleOrder(Rng rng) {
+        if (rng == null) { return; }
+        for (int i = this.order.Length - 1; i > 0; i = i - 1) {
+            int j = rng.Range(0, i + 1);
+            int t = this.order[i]; this.order[i] = this.order[j]; this.order[j] = t;
+        }
+    }
+
+    // 牌组：选中的 8 张各 2 副本 = 16 张。
+    public int[] DeckIds() {
+        int[] ids = new int[CardBuild.DeckSize * CardBuild.Copies];
+        int n = 0;
+        for (int id = 0; id < CardBuild.Candidates; id = id + 1) {
+            if (!this.picked[id]) { continue; }
+            n = CardBuild.Put(ids, n, id, CardBuild.Copies);
+        }
+        return ids;
+    }
+
+    // 对手固定牌组（16 张）：输出为主、带一点防守，不是纯摆设。
+    public static int[] AiDeckIds() {
+        int[] ids = new int[16];
+        int n = 0;
+        n = CardBuild.Put(ids, n, 0, 2);   // 短剑斩
+        n = CardBuild.Put(ids, n, 3, 3);   // 烈焰箭
+        n = CardBuild.Put(ids, n, 5, 3);   // 破甲重击
+        n = CardBuild.Put(ids, n, 7, 2);   // 疾风连击
+        n = CardBuild.Put(ids, n, 1, 2);   // 铁壁格挡
+        n = CardBuild.Put(ids, n, 6, 2);   // 圣光壁垒
+        n = CardBuild.Put(ids, n, 4, 1);   // 战地医师
+        n = CardBuild.Put(ids, n, 9, 1);   // 烈焰风暴
+        return ids;
+    }
+
+    static int Put(int[] ids, int n, int id, int copies) {
+        for (int k = 0; k < copies; k = k + 1) {
+            if (n >= ids.Length) { break; }
+            ids[n] = id;
+            n = n + 1;
+        }
+        return n;
+    }
+}

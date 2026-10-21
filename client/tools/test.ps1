@@ -31,7 +31,7 @@ if (-not $PackageProject) {
     if ($env:ZAN_HOME) {
         $PackageProject = $env:ZAN_HOME
     } else {
-        throw '需要 -PackageProject 指向含 packages/ 的仓库根（如 D:/project/zan-head）'
+        throw '需要 -PackageProject 指向含 packages/ 的仓库根（如 D:/project/zan-lang）'
     }
 }
 $out = Join-Path $repo 'build/cardarena'

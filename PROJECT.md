@@ -84,7 +84,7 @@
 ## 编译
 
 ```powershell
-pwsh -File client/tools/build.ps1 -PackageProject D:\project\zan-head
+pwsh -File client/tools/build.ps1 -PackageProject D:\project\zan-lang
 ```
 
 `-PackageProject` 指向**含 `packages/` 的仓库根**（公共包 `Zan.Game` /
@@ -98,7 +98,7 @@ pwsh -File client/tools/build.ps1 -PackageProject D:\project\zan-head
 ## 测试
 
 ```powershell
-pwsh -File client/tools/test.ps1 -PackageProject D:\project\zan-head
+pwsh -File client/tools/test.ps1 -PackageProject D:\project\zan-lang
 ```
 
 三段判据：

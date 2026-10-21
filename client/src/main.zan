@@ -1,0 +1,143 @@
+using System;
+using System.Collections.Generic;
+using Gui;
+
+// 千军牌局 · CARDARENA —— 阶段一：项目骨架 + 卡牌对战场景。
+//
+// 参考源：Qsgs-Fans/FreeKill（GPL-3.0；Lua 主体已迁到 freekill-core）。
+// ⚠️ 美术 IP 红线：仓库内 26 张武将立绘是**三国杀原作（游卡）美术**，
+// 官方文档甚至写"三国杀的皮肤那么多，尽情选择吧"——未获原作再授权，
+// 不可商用移植。本项目只借鉴其**Lua 声明式技能系统**（技能以纯表声明、
+// 事件栈 + Task 调度、断线重连、录像回放）与卡牌对战流程，
+// 卡面/立绘/图标全部自研。
+//
+// Zan 路线：2D 卡牌 UI（Canvas 几何 + 后期 Gui 控件树）。
+// 联机走服务端 + HTTP/WS（参照 legend 的 HTTP:48099 + TCP:47100 结构）。
+//
+// 环境变量：CARDARENA_SMOKE=1 / CARDARENA_FRAMES=<n> / CARDARENA_CAPTURE=<path.zpx>
+public class Program {
+    Form form;
+    App app;
+    int frames = 0;
+    int tick = 0;
+
+    // 手牌
+    string[] hand = new string[] { "突", "袭", "坚壁", "烈火", "铁索", "空城" };
+    int[] handCost = new int[] { 2, 3, 2, 4, 3, 5 };
+    int[] hp = new int[] { 4, 3, 5, 3, 4, 2 };
+    int selected = -1;
+    int mana = 6;
+    int manaMax = 10;
+
+    static void Main() {
+        Program p = new Program();
+        p.Run();
+    }
+
+    void Run() {
+        form = Form.CreateDark("千军牌局 · CARDARENA", 1280, 800);
+        app = form.GetApp();
+        app.UseSkin("dark");
+        Canvas.SetBackend(1);
+        app.Show();
+        app.RequestRedraw();
+        while (true) {
+            int got = app.PollOneEvent();
+            if (got < 0) { break; }
+            Tick();
+            app.BeginFrame();
+            Render();
+            app.RenderChrome("千军牌局 · CARDARENA");
+            frames = frames + 1;
+            string capture = Environment.GetEnvironmentVariable("CARDARENA_CAPTURE");
+            if (capture != "" && frames == 60) {
+                app.canvas.WritePixels(capture, 0, 0, app.ClientWidth(), app.ClientHeight());
+                Console.WriteLine("CARDARENA_CAPTURE " + Convert.ToString(app.ClientWidth())
+                    + "x" + Convert.ToString(app.ClientHeight()));
+            }
+            app.PresentFrame();
+            if (IsSmoke() && frames >= SmokeFrames()) {
+                Console.WriteLine("CARDARENA_SMOKE_OK frames=" + Convert.ToString(frames)
+                    + " tick=" + Convert.ToString(tick));
+                break;
+            }
+            app.RequestRedraw();
+            Window.SleepMs(16);
+        }
+    }
+
+    bool IsSmoke() {
+        return Environment.GetEnvironmentVariable("CARDARENA_SMOKE") == "1";
+    }
+
+    int SmokeFrames() {
+        string v = Environment.GetEnvironmentVariable("CARDARENA_FRAMES");
+        if (v == "") { return 90; }
+        return Convert.ToInt32(v);
+    }
+
+    void Tick() {
+        tick = tick + 1;
+        mana = mana + 1;
+        if (mana > manaMax) { mana = manaMax; }
+    }
+
+    void Render() {
+        Canvas c = app.canvas;
+        int w = c.Width();
+        int h = c.Height();
+        c.FillVGrad(0, 0, w, h, 0xFF16202B, 0xFF0D141C);
+        // 牌桌
+        int tx = 120;
+        int ty = 110;
+        int tw = w - 240;
+        int th = 380;
+        c.FillRoundRect(tx, ty, tw, th, 16, 0xFF1D2C39);
+        c.DrawRoundRect(tx, ty, tw, th, 16, 0xFF2F4A60, 2);
+        // 双方血条
+        c.FillRect(tx + 24, ty + 20, 220, 14, 0xFF16202B);
+        c.FillRect(tx + 24, ty + 20, 220, 14, 0xFF3E8FD6);
+        c.DrawText(tx + 24, ty + 42, "你 · 势力" + Convert.ToString(6) + "兵", 0xFFC8D8E8, 15);
+        c.FillRect(tx + tw - 244, ty + 20, 220, 14, 0xFF16202B);
+        c.FillRect(tx + tw - 244, ty + 20, 118, 14, 0xFFB04A4A);
+        c.DrawText(tx + tw - 244, ty + 42, "对手 · 势力" + Convert.ToString(4) + "兵", 0xFFC8D8E8, 15);
+        // 场上的单位
+        string[] units = new string[] { "刀盾兵", "弓手", "骑兵", "谋士", "工造营" };
+        for (int i = 0; i < units.Length; i = i + 1) {
+            int ux = tx + 60 + i * 150;
+            int uy = ty + 130;
+            c.FillRoundRect(ux, uy, 100, 118, 10, 0xFF25384A);
+            c.DrawRoundRect(ux, uy, 100, 118, 10, 0xFF3C5C78, 2);
+            c.DrawTextCentered(ux, uy + 34, 100, 30, units[i], 0xFFDCE8F4, 20);
+            c.FillRect(ux + 12, uy + 78, 76, 8, 0xFF16202B);
+            c.FillRect(ux + 12, uy + 78, 76 * hp[i] / 5, 8, 0xFF48C78E);
+        }
+        // 法力
+        c.DrawText(tx + 24, ty + th - 44, "法力 " + Convert.ToString(mana) + "/" + Convert.ToString(manaMax),
+            0xFF7FB2E5, 16);
+        // 手牌
+        int cardW = 132;
+        int cardH = 180;
+        int gap = 14;
+        int totalW = hand.Length * cardW + (hand.Length - 1) * gap;
+        int sx = (w - totalW) / 2;
+        int sy = h - cardH - 40;
+        for (int i = 0; i < hand.Length; i = i + 1) {
+            int cx = sx + i * (cardW + gap);
+            int cy = sy;
+            bool isSel = (i == selected);
+            if (isSel) { cy = sy - 24; }
+            c.FillRoundRect(cx, cy, cardW, cardH, 10, 0xFF243544);
+            c.DrawRoundRect(cx, cy, cardW, cardH, 10, isSel ? 0xFFD9B45C : 0xFF44607A, isSel ? 3 : 2);
+            c.FillRoundRect(cx + 10, cy + 10, cardW - 20, 92, 6, 0xFF1A2836);
+            c.DrawTextCentered(cx, cy + 36, cardW, 40, hand[i], 0xFFE6EEF7, 30);
+            c.DrawText(cx + 12, cy + 112, "耗 " + Convert.ToString(handCost[i]), 0xFF8FA6BC, 14);
+            c.DrawText(cx + cardW - 52, cy + 112, "武 " + Convert.ToString(hp[i]), 0xFF8FA6BC, 14);
+        }
+        c.DrawText(24, 24, "千军牌局 · 卡牌对战骨架", 0xFFD9B45C, 20);
+        c.DrawText(24, 52, "tick=" + Convert.ToString(tick) + "  手牌 " + Convert.ToString(hand.Length)
+            + "  选中原语：Lua 声明式技能表（事件栈 + Task 调度）", 0xFF8FA6BC, 14);
+        c.DrawText(24, h - 26, "TODO 素材：卡面底板6稀有度 + 64x64 符号化图标60 + 卡背 + 头像框4 + 牌桌贴图",
+            0x998FA6BC, 14);
+    }
+}

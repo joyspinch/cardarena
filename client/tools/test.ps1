@@ -19,11 +19,7 @@ if (-not $Compiler) {
         if ($cmd) {
             $Compiler = $cmd.Source
         } else {
-            $fallback = 'D:/project/zan-lang/build/zanc.exe'
-            if (-not (Test-Path $fallback)) {
-                throw '找不到 zanc：请设 $env:ZAN_HOME、$env:ZANC，或用 -Compiler 指定编译器路径'
-            }
-            $Compiler = $fallback
+            throw '找不到 zanc：请设 $env:ZAN_HOME、$env:ZANC，或用 -Compiler 指定编译器路径'
         }
     }
 }
@@ -31,7 +27,7 @@ if (-not $PackageProject) {
     if ($env:ZAN_HOME) {
         $PackageProject = $env:ZAN_HOME
     } else {
-        throw '需要 -PackageProject 指向含 packages/ 的仓库根（如 D:/project/zan-lang）'
+        throw '需要 -PackageProject 指向含 packages/ 的 zan-lang 仓库根，或设 $env:ZAN_HOME'
     }
 }
 $out = Join-Path $repo 'build/cardarena'

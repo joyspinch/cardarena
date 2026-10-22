@@ -1,6 +1,6 @@
 # 卡牌竞技 —— 回合制卡牌对战（人 vs AI）
 
-> 交付标准见 `D:\project\zan-lang\docs\REAL_GAME_STANDARD.md`（真实位图资产 /
+> 交付标准见 zan-lang 仓库的 `docs/REAL_GAME_STANDARD.md`（真实位图资产 /
 > 可玩核心闭环 / 音画反馈 三道关卡）。**素材清单见 `client/ASSETS.md`**。
 
 ## 这是什么
@@ -84,12 +84,12 @@
 ## 编译
 
 ```powershell
-pwsh -File client/tools/build.ps1 -PackageProject D:\project\zan-lang
+pwsh -File client/tools/build.ps1 -PackageProject "$env:ZAN_HOME"
 ```
 
 `-PackageProject` 指向**含 `packages/` 的仓库根**（公共包 `Zan.Game` /
 `Zan.Gui` 住在那里）。编译器默认按 `$env:ZAN_HOME` → `$env:ZANC` → PATH →
-`D:/project/zan-lang/build/zanc.exe` 依次找，也可用 `-Compiler` 显式指定。
+`$env:ZAN_HOME/build/zanc.exe` 依次找，也可用 `-Compiler` 显式指定。
 
 素材会拷到 exe 旁（`build/cardarena/assets/`），运行时磁盘优先。
 皮肤包另拷到 **exe 同级**的 `build/cardarena/skins/cardarena/skin.css`
@@ -98,7 +98,7 @@ pwsh -File client/tools/build.ps1 -PackageProject D:\project\zan-lang
 ## 测试
 
 ```powershell
-pwsh -File client/tools/test.ps1 -PackageProject D:\project\zan-lang
+pwsh -File client/tools/test.ps1 -PackageProject "$env:ZAN_HOME"
 ```
 
 三段判据：

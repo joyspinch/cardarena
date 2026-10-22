@@ -50,6 +50,11 @@ public class CardPalette {
     public const int Jade = 0xFF7FC08A;        // 成功 / 治疗
     public const int Amber = 0xFFE0B25C;       // 强调数值
 
+    // 文字投影色（压在游戏画面上时垫一层暗色才读得清）。此前硬编码在
+    // CardPaint 的三处 DrawText 里，与"整个项目唯一一处颜色定义"这条规矩
+    // 冲突，收进色板。
+    public const int TextShadow = 0xC0000000;
+
     // 稀有度边框色（0 普通 / 1 精良 / 2 史诗）。
     public static int RarityEdge(int rarity) {
         if (rarity == 1) { return CardPalette.AzureBright; }

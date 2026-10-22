@@ -411,14 +411,16 @@ public class CardGame : IGuiHostLoop {
     // 提示条（美术底板 + 描边文字），压在牌桌下沿。
     void DrawToast(Canvas c, int w, int h) {
         int size = 18;
-        int tw = c.MeasureText(this.toast, CardPaint.S(size));
+        // 量宽换算回逻辑像素：Canvas.MeasureText 给的是设备宽，直接拿来当
+        // 底板宽度会在视口放大后撑歪。
+        int tw = CText.WidthPx(this.toast, size);
         int pw = tw + 48;
         int ph = 40;
         int px = w / 2 - pw / 2;
         int py = h - 96;
         this.view.DrawHudPlate(c, px, py, pw, ph);
-        CardPaint.TextCenteredShadow(c, this.toast, w / 2, py + 11, w, size,
-            CardPalette.Amber);
+        CText.DrawCenteredShadowPx(c, this.toast, w / 2, py + 11, size,
+            CardPalette.Amber, CardPalette.TextShadow);
     }
 
     // 出牌飞行动画：卡牌从**出牌方**的手牌位飞向目标位（指向对手的牌

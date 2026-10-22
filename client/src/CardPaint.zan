@@ -4,9 +4,17 @@ using Game.Kit;
 
 // 逻辑坐标下的画布原语：把 CDraw 的视口映射包一层，
 // 让界面布局全部写在逻辑像素里（1280×800 设计分辨率）。
+//
+// 通用绘制原语**不再在这里实现**——九宫格切图归 Game.Kit.CKitSlice、
+// 裁源贴图归 Game.Kit.CDraw.BlitImageSrcKey、文字（普通/居中/右对齐/阴影/
+// 描边）归 Game.Kit.CText。同一件事此前在 8 个游戏项目各写一份，签名漂成
+// 8 种，阴影与描边的偏移也各写各的。
+//
+// 本文件剩下的是**形状**原语与本项目的底板倍率常量。
 public class CardPaint {
     // 底板按**显示尺寸 2 倍**入库（与卡面底板同一口径），因此九宫格
-    // 的源内缩量要折半才是逻辑像素的角宽。
+    // 的源内缩量要折半才是逻辑像素的角宽——调 CKitSlice.NineSlice 的
+    // targetScale 时传这个值。
     public const int PlateScale = 2;
 
     public static int X(int v) { return CDraw.MapX(v + CDraw.originX); }
@@ -56,128 +64,5 @@ public class CardPaint {
         if (t <= 0) { return; }
         c.DrawLine(CardPaint.X(x0), CardPaint.Y(y0), CardPaint.X(x1), CardPaint.Y(y1),
                    color, CardPaint.S(t));
-    }
-
-    // 文字：逻辑坐标 + 逻辑字号。
-    public static void Text(Canvas c, string text, int x, int y, int size, int color) {
-        if (text == null || text == "") { return; }
-        c.DrawText(CardPaint.X(x), CardPaint.Y(y), text, color, CardPaint.S(size));
-    }
-
-    public static void TextCentered(Canvas c, string text, int cx, int y, int boxW,
-                                    int size, int color) {
-        if (text == null || text == "") { return; }
-        int tw = c.MeasureText(text, CardPaint.S(size));
-        c.DrawText(CardPaint.X(cx - tw / 2), CardPaint.Y(y), text, color, CardPaint.S(size));
-    }
-
-    // 右对齐文字（以右边界 rx 对齐）。
-    public static void TextRight(Canvas c, string text, int rx, int y, int size, int color) {
-        if (text == null || text == "") { return; }
-        int tw = c.MeasureText(text, CardPaint.S(size));
-        c.DrawText(CardPaint.X(rx - tw), CardPaint.Y(y), text, color, CardPaint.S(size));
-    }
-
-    // ----- 贴图 -----------------------------------------------------------
-
-    // 已解析的内存键版本：目标矩形在前、源矩形在后（源坐标是**原图像素**）。
-    // 引擎没有 border-image，九宫格与取帧都靠它。
-    //
-    // ⚠️ 键必须是 CDraw.BlitSource 解析出来的 "mem:xxx"，**不能**再喂回
-    // BlitSource —— 那会把 "mem:xxx" 当文件名去读，抛 FileNotFoundException。
-    public static void BlitKey(Canvas c, string key, int dx, int dy, int dw, int dh,
-                               int sx, int sy, int sw, int sh) {
-        if (key == "" || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) { return; }
-        c.BlitImage(key, CardPaint.X(dx), CardPaint.Y(dy),
-                    CardPaint.S(dw), CardPaint.S(dh), sx, sy, sw, sh);
-    }
-
-    // 九宫格：把底板按 inset 切成 9 块拼到目标矩形（角固定、边拉伸、
-    // 中间拉伸）。inset 是**源图像素**；底板 2 倍入库，所以目标角宽是
-    // inset / 2 逻辑像素。源图不在（路径空 / 读不出）时什么都不画。
-    public static void NineSlice(Canvas c, string path, int x, int y, int w, int h,
-                                  int inset) {
-        if (path == "" || w <= 0 || h <= 0) { return; }
-        string key = CDraw.BlitSource(c, path);
-        if (key == null) { return; }
-        int sw = Canvas.ImageWidth(key);
-        int sh = Canvas.ImageHeight(key);
-        if (sw <= 0 || sh <= 0) { return; }
-        int sc = inset;
-        if (sc > sw / 2) { sc = sw / 2; }
-        if (sc > sh / 2) { sc = sh / 2; }
-        if (sc < 1) { return; }
-        int dc = sc / CardPaint.PlateScale;
-        if (dc < 1) { dc = 1; }
-        if (dc * 2 > w) { dc = w / 2; }
-        if (dc * 2 > h) { dc = h / 2; }
-        if (dc < 1) { return; }
-        sc = dc * CardPaint.PlateScale;
-        int midW = sw - sc * 2;
-        int midH = sh - sc * 2;
-        int dwMid = w - dc * 2;
-        int dhMid = h - dc * 2;
-        if (midW < 1 || midH < 1 || dwMid < 1 || dhMid < 1) { return; }
-        // 四角。
-        CardPaint.BlitKey(c, key, x, y, dc, dc, 0, 0, sc, sc);
-        CardPaint.BlitKey(c, key, x + w - dc, y, dc, dc, sw - sc, 0, sc, sc);
-        CardPaint.BlitKey(c, key, x, y + h - dc, dc, dc, 0, sh - sc, sc, sc);
-        CardPaint.BlitKey(c, key, x + w - dc, y + h - dc, dc, dc,
-            sw - sc, sh - sc, sc, sc);
-        // 四边。
-        CardPaint.BlitKey(c, key, x + dc, y, dwMid, dc, sc, 0, midW, sc);
-        CardPaint.BlitKey(c, key, x + dc, y + h - dc, dwMid, dc, sc, sh - sc, midW, sc);
-        CardPaint.BlitKey(c, key, x, y + dc, dc, dhMid, 0, sc, sc, midH);
-        CardPaint.BlitKey(c, key, x + w - dc, y + dc, dc, dhMid, sw - sc, sc, sc, midH);
-        // 中心。
-        CardPaint.BlitKey(c, key, x + dc, y + dc, dwMid, dhMid, sc, sc, midW, midH);
-    }
-
-    // ----- 带阴影的文字 ----------------------------------------------------
-
-    // 文字压在游戏画面上时必须带阴影才读得清：先在 (1,1) 偏移处画一层
-    // 暗色，再画正文。
-    public static void TextShadow(Canvas c, string text, int x, int y, int size,
-                                  int color) {
-        if (text == null || text == "") { return; }
-        c.DrawText(CardPaint.X(x + 1), CardPaint.Y(y + 1), text, 0xC0000000,
-            CardPaint.S(size));
-        c.DrawText(CardPaint.X(x), CardPaint.Y(y), text, color, CardPaint.S(size));
-    }
-
-    public static void TextCenteredShadow(Canvas c, string text, int cx, int y,
-                                          int boxW, int size, int color) {
-        if (text == null || text == "") { return; }
-        int tw = c.MeasureText(text, CardPaint.S(size));
-        int tx = cx - tw / 2;
-        c.DrawText(CardPaint.X(tx + 1), CardPaint.Y(y + 1), text, 0xC0000000,
-            CardPaint.S(size));
-        c.DrawText(CardPaint.X(tx), CardPaint.Y(y), text, color, CardPaint.S(size));
-    }
-
-    public static void TextRightShadow(Canvas c, string text, int rx, int y, int size,
-                                        int color) {
-        if (text == null || text == "") { return; }
-        int tw = c.MeasureText(text, CardPaint.S(size));
-        int tx = rx - tw;
-        c.DrawText(CardPaint.X(tx + 1), CardPaint.Y(y + 1), text, 0xC0000000,
-            CardPaint.S(size));
-        c.DrawText(CardPaint.X(tx), CardPaint.Y(y), text, color, CardPaint.S(size));
-    }
-
-    // 描边文字（标题级）：四向偏移画一圈描边色，再画正文。
-    public static void TextOutlined(Canvas c, string text, int cx, int y, int boxW,
-                                    int size, int color, int outline) {
-        if (text == null || text == "") { return; }
-        int tw = c.MeasureText(text, CardPaint.S(size));
-        int tx = cx - tw / 2;
-        int px = CardPaint.X(tx);
-        int py = CardPaint.Y(y);
-        int fs = CardPaint.S(size);
-        c.DrawText(px - 1, py, text, outline, fs);
-        c.DrawText(px + 1, py, text, outline, fs);
-        c.DrawText(px, py - 1, text, outline, fs);
-        c.DrawText(px, py + 1, text, outline, fs);
-        c.DrawText(px, py, text, color, fs);
     }
 }
